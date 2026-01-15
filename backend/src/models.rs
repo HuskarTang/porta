@@ -81,3 +81,45 @@ pub struct ProxyStatus {
     pub enabled: bool,
     pub listen_port: u16,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ApiResponse<T> {
+    pub code: i32,
+    pub message: String,
+    pub data: Option<T>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SubscribeRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub r#type: String,
+    pub community: String,
+    pub remote_addr: String,
+    pub local_mapping: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct UpdateSessionRequest {
+    pub id: String,
+    pub status: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PublishRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub r#type: String,
+    pub port: u16,
+    pub summary: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ToggleRequest {
+    pub id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ProxyToggle {
+    pub enabled: bool,
+}

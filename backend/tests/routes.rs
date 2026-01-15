@@ -15,7 +15,7 @@ async fn node_info_should_return_name() {
         .await
         .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["name"], "我的节点");
+    assert_eq!(json["data"]["name"], "我的节点");
 }
 
 #[tokio::test]
@@ -30,7 +30,7 @@ async fn communities_count_matches_mock() {
         .await
         .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json.as_array().map(|v| v.len()), Some(3));
+    assert_eq!(json.get("data").and_then(|v| v.as_array()).map(|v| v.len()), Some(3));
 }
 
 #[tokio::test]
@@ -51,7 +51,8 @@ async fn community_service_list_contains_protocols() {
         .unwrap();
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     let first_protocol = json
-        .as_array()
+        .get("data")
+        .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|v| v.get("protocol"))
         .and_then(|v| v.as_str())

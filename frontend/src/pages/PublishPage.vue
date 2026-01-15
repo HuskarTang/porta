@@ -44,10 +44,12 @@
         <el-table-column label="发布日期" prop="publish_date" width="120" />
         <el-table-column label="操作" width="180">
           <template #default="{ row }">
-            <el-button size="small">
+            <el-button size="small" @click="togglePublish(row)">
               {{ row.status === "在线" ? "下架" : "上架" }}
             </el-button>
-            <el-button size="small" type="danger">删除</el-button>
+            <el-button size="small" type="danger" @click="deletePublish(row)">
+              删除
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -86,7 +88,13 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
-import { fetchPublishedServices } from "../services/api";
+import { ElMessage, ElMessageBox } from "element-plus";
+import {
+  fetchPublishedServices,
+  publishService,
+  removePublished,
+  unpublishService
+} from "../services/api";
 import type { PublishedService } from "../types";
 
 const services = ref<PublishedService[]>([]);
@@ -109,12 +117,45 @@ const stats = computed(() => {
 });
 
 const submitPublish = () => {
-  dialogVisible.value = false;
+  publishService({
+    name: newService.name,
+    type: newService.type,
+    port: Number(newService.port),
+    summary: newService.summary
+  }).then(async () => {
+    dialogVisible.value = false;
+    ElMessage.success("发布成功");
+    services.value = await fetchPublishedServices();
+  });
 };
 
 onMounted(async () => {
   services.value = await fetchPublishedServices();
 });
+
+const togglePublish = async (row: PublishedService) => {
+  if (row.status === "在线") {
+    await unpublishService(row.id);
+    ElMessage.success("已下架");
+  } else {
+    await publishService({
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      port: row.port,
+      summary: row.summary
+    });
+    ElMessage.success("已上架");
+  }
+  services.value = await fetchPublishedServices();
+};
+
+const deletePublish = async (row: PublishedService) => {
+  await ElMessageBox.confirm(`确认删除 ${row.name} ?`, "提示");
+  await removePublished(row.id);
+  ElMessage.success("已删除");
+  services.value = await fetchPublishedServices();
+};
 </script>
 
 <style scoped>

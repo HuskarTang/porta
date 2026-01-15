@@ -50,6 +50,7 @@
               active-text="公告中"
               inactive-text="已禁止"
               style="min-width: 160px"
+              @change="(val) => onToggleAnnounce(row.id, val)"
             />
           </template>
         </el-table-column>
@@ -60,7 +61,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { fetchCommunityServiceList } from "../services/api";
+import { ElMessage } from "element-plus";
+import { announceService, fetchCommunityServiceList } from "../services/api";
 import type { CommunityService } from "../types";
 
 const services = ref<CommunityService[]>([]);
@@ -74,6 +76,11 @@ const stats = computed(() => {
 onMounted(async () => {
   services.value = await fetchCommunityServiceList();
 });
+
+const onToggleAnnounce = async (id: string, val: boolean) => {
+  await announceService(id, val);
+  ElMessage.success(val ? "已公告" : "已禁止");
+};
 </script>
 
 <style scoped>

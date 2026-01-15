@@ -7,87 +7,125 @@ import type {
   ServiceDescriptor,
   SubscribedService
 } from "../types";
-import {
-  mockCommunities,
-  mockCommunityNodes,
-  mockCommunityServices,
-  mockDiscoveredServices,
-  mockNodeInfo,
-  mockPublishedServices,
-  mockSubscribedServices
-} from "./mock";
+import { ElMessage } from "element-plus";
 
 const baseUrl = "";
+
+interface ApiResp<T> {
+  code: number;
+  message: string;
+  data?: T;
+}
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     headers: { "Content-Type": "application/json" },
     ...options
   });
-  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
-  return (await response.json()) as T;
+  const json = (await response.json()) as ApiResp<T>;
+  if (!response.ok || json.code !== 0) {
+    const msg = json.message || `Request failed: ${response.status}`;
+    ElMessage.error(msg);
+    throw new Error(msg);
+  }
+  return json.data as T;
 }
 
 export async function fetchNodeInfo(): Promise<NodeInfo> {
-  try {
-    return await request<NodeInfo>("/porta/node/info");
-  } catch {
-    return mockNodeInfo;
-  }
+  return await request<NodeInfo>("/porta/node/info");
 }
 
 export async function fetchCommunities(): Promise<CommunitySummary[]> {
-  try {
-    return await request<CommunitySummary[]>("/porta/community/list");
-  } catch {
-    return mockCommunities;
-  }
+  return await request<CommunitySummary[]>("/porta/community/list");
 }
 
 export async function fetchCommunityServices(
   communityId: string
 ): Promise<ServiceDescriptor[]> {
-  try {
-    return await request<ServiceDescriptor[]>(
-      `/porta/service/discover?communityId=${communityId}`
-    );
-  } catch {
-    return mockDiscoveredServices;
-  }
+  return await request<ServiceDescriptor[]>(
+    `/porta/service/discover?communityId=${communityId}`
+  );
 }
 
 export async function fetchSubscribedServices(): Promise<SubscribedService[]> {
-  try {
-    return await request<SubscribedService[]>(
-      "/porta/service/subscriptions"
-    );
-  } catch {
-    return mockSubscribedServices;
-  }
+  return await request<SubscribedService[]>("/porta/service/subscriptions");
 }
 
 export async function fetchPublishedServices(): Promise<PublishedService[]> {
-  try {
-    return await request<PublishedService[]>("/porta/service/published");
-  } catch {
-    return mockPublishedServices;
-  }
+  return await request<PublishedService[]>("/porta/service/published");
 }
 
 export async function fetchCommunityNodes(): Promise<CommunityNode[]> {
-  try {
-    return await request<CommunityNode[]>("/porta/community/node/list");
-  } catch {
-    return mockCommunityNodes;
-  }
+  return await request<CommunityNode[]>("/porta/community/node/list");
 }
 
 export async function fetchCommunityServiceList(): Promise<CommunityService[]> {
-  try {
-    return await request<CommunityService[]>(
-      "/porta/community/service/list"
-    );
-  } catch {
-    return mockCommunityServices;
-  }
+  return await request<CommunityService[]>("/porta/community/service/list");
+}
+
+export async function subscribeService(payload: Record<string, unknown>) {
+  return await request("/porta/service/subscribe", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function connectService(id: string, connect = true) {
+  return await request(
+    connect ? "/porta/service/connect" : "/porta/service/disconnect",
+    {
+      method: "POST",
+      body: JSON.stringify({ id })
+    }
+  );
+}
+
+export async function publishService(payload: Record<string, unknown>) {
+  return await request("/porta/service/publish", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function unpublishService(id: string) {
+  return await request("/porta/service/unpublish", {
+    method: "POST",
+    body: JSON.stringify({ id })
+  });
+}
+
+export async function removePublished(id: string) {
+  return await request("/porta/service/remove", {
+    method: "POST",
+    body: JSON.stringify({ id })
+  });
+}
+
+export async function announceService(id: string, enabled: boolean) {
+  return await request(
+    enabled
+      ? "/porta/community/service/announce"
+      : "/porta/community/service/disable",
+    {
+      method: "POST",
+      body: JSON.stringify({ id })
+    }
+  );
+}
+
+export async function banNode(id: string, banned: boolean) {
+  return await request(
+    banned ? "/porta/community/node/ban" : "/porta/community/node/unban",
+    {
+      method: "POST",
+      body: JSON.stringify({ id })
+    }
+  );
+}
+
+export async function toggleProxy(enabled: boolean) {
+  return await request(enabled ? "/porta/proxy/enable" : "/porta/proxy/disable", {
+    method: "POST",
+    body: JSON.stringify({ enabled })
+  });
 }

@@ -36,10 +36,30 @@
         </el-table-column>
         <el-table-column label="操作" width="140">
           <template #default="{ row }">
-            <el-button size="small" type="primary" :disabled="row.status !== '畅通'" @click="openAccess(row)">
+            <el-button
+              size="small"
+              type="primary"
+              :disabled="row.status !== '畅通'"
+              @click="openAccess(row)"
+            >
               访问
             </el-button>
-            <el-button size="small" text>⋮</el-button>
+            <el-button
+              size="small"
+              type="success"
+              v-if="row.status !== '畅通'"
+              @click="toggleConnect(row, true)"
+            >
+              连接
+            </el-button>
+            <el-button
+              size="small"
+              type="warning"
+              v-else
+              @click="toggleConnect(row, false)"
+            >
+              断开
+            </el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -50,7 +70,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { fetchSubscribedServices } from "../services/api";
+import { ElMessage } from "element-plus";
+import {
+  connectService,
+  fetchSubscribedServices
+} from "../services/api";
 import type { SubscribedService } from "../types";
 
 const router = useRouter();
@@ -79,6 +103,16 @@ const openAccess = (row: SubscribedService) => {
 onMounted(async () => {
   services.value = await fetchSubscribedServices();
 });
+
+const refresh = async () => {
+  services.value = await fetchSubscribedServices();
+};
+
+const toggleConnect = async (row: SubscribedService, connect = true) => {
+  await connectService(row.id, connect);
+  ElMessage.success(connect ? "已连接" : "已断开");
+  await refresh();
+};
 </script>
 
 <style scoped>

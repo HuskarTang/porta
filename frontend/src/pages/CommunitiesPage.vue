@@ -9,7 +9,7 @@
         placeholder="输入社区 MultiAddr 或邀请码"
         class="toolbar-grow"
       />
-      <el-button>
+      <el-button @click="load">
         <el-icon><Refresh /></el-icon>
         刷新
       </el-button>
@@ -65,8 +65,12 @@ const viewDetail = (row: CommunitySummary) => {
 };
 
 onMounted(async () => {
-  communities.value = await fetchCommunities();
+  await load();
 });
+
+const load = async () => {
+  communities.value = await fetchCommunities();
+};
 </script>
 
 <style scoped>

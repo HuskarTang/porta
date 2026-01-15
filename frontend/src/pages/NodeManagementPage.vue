@@ -29,10 +29,20 @@
         </el-table-column>
         <el-table-column label="操作" width="140">
           <template #default="{ row }">
-            <el-button size="small" type="danger" v-if="!row.banned">
+            <el-button
+              size="small"
+              type="danger"
+              v-if="!row.banned"
+              @click="toggleBan(row.id, true)"
+            >
               封禁
             </el-button>
-            <el-button size="small" type="success" v-else>
+            <el-button
+              size="small"
+              type="success"
+              v-else
+              @click="toggleBan(row.id, false)"
+            >
               解除封禁
             </el-button>
           </template>
@@ -44,7 +54,8 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { fetchCommunityNodes } from "../services/api";
+import { ElMessage } from "element-plus";
+import { banNode, fetchCommunityNodes } from "../services/api";
 import type { CommunityNode } from "../types";
 
 const nodes = ref<CommunityNode[]>([]);
@@ -58,6 +69,12 @@ const stats = computed(() => {
 onMounted(async () => {
   nodes.value = await fetchCommunityNodes();
 });
+
+const toggleBan = async (id: string, banned: boolean) => {
+  await banNode(id, banned);
+  nodes.value = await fetchCommunityNodes();
+  ElMessage.success(banned ? "已封禁" : "已解封");
+};
 </script>
 
 <style scoped>
