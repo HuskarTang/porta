@@ -66,55 +66,58 @@
 说明：接口路径为建议草案，后续可按实际项目调整。
 
 ### 节点与配置
-- `GET /api/node/info`
-- `POST /api/node/config`
-- `POST /api/node/key/import`
-- `POST /api/node/key/generate`
+- `GET /porta/node/info`
+- `POST /porta/node/config`
+- `POST /porta/node/key/import`
+- `POST /porta/node/key/generate`
 
 ### 社区节点管理
-- `GET /api/community/list`
-- `POST /api/community/add`
-- `POST /api/community/remove`
-- `POST /api/community/connect`
+- `GET /porta/community/list`
+- `POST /porta/community/add`
+- `POST /porta/community/remove`
+- `POST /porta/community/connect`
 
 ### 服务发现/订阅
-- `GET /api/service/discover?communityId=`
-- `POST /api/service/subscribe`
-- `GET /api/service/subscriptions`
+- `GET /porta/service/discover?communityId=`
+- `POST /porta/service/subscribe`
+- `GET /porta/service/subscriptions`
 
 ### 服务连接/访问
-- `POST /api/service/connect`
-- `POST /api/service/disconnect`
-- `GET /api/service/sessions`
-- `POST /api/service/access`（HTTP/HTTPS 打开端口映射）
+- `POST /porta/service/connect`
+- `POST /porta/service/disconnect`
+- `GET /porta/service/sessions`
+- `POST /porta/service/access`（HTTP/HTTPS 打开端口映射）
 
 ### 服务发布
-- `POST /api/service/publish`
-- `POST /api/service/unpublish`
-- `DELETE /api/service/remove`
+- `POST /porta/service/publish`
+- `POST /porta/service/unpublish`
+- `DELETE /porta/service/remove`
 
 ### 社区管理
-- `POST /api/community/service/announce`
-- `POST /api/community/service/disable`
-- `POST /api/community/node/ban`
-- `POST /api/community/node/unban`
+- `POST /porta/community/service/announce`
+- `POST /porta/community/service/disable`
+- `POST /porta/community/node/ban`
+- `POST /porta/community/node/unban`
 
 ### Omega 代理
-- `POST /api/proxy/enable`
-- `POST /api/proxy/disable`
-- `GET /api/proxy/status`
+- `POST /porta/proxy/enable`
+- `POST /porta/proxy/disable`
+- `GET /porta/proxy/status`
 
 ---
 
 # 4. 数据模型设计
 ## 4.1 NodeConfig
 ```
-node_id: string
-peer_id: string
 name: string
 key_path: string
+tcp_listen_enable: bool
+tcp_listen_port: number
+quci_listen_enable: bool
+quci_listen_port: number
+
 listen_port: number
-external_addr: string
+external_addr: []string
 mode: "gui" | "service"
 ```
 
@@ -192,7 +195,7 @@ state: "connecting" | "connected" | "closed" | "error"
 - 全链路启用 Noise + TLS
 - 配置与密钥文件本地加密存储
 - 访问控制策略：初期默认本地用户可操作
-- 后续可扩展 Token/API-Key 认证
+- 后续可扩展 Token/porta-Key 认证
 
 ---
 
