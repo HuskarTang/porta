@@ -98,6 +98,10 @@ pub struct SessionInfo {
     pub local_port: u16,
     pub remote_peer: String,
     pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_active: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

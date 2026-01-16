@@ -124,3 +124,45 @@ async fn secure_routes_should_return_list() {
     let json: Value = serde_json::from_slice(&bytes).unwrap();
     assert!(json.get("data").is_some());
 }
+
+#[tokio::test]
+async fn proxy_status_should_return() {
+    setup_env();
+    let app = create_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/porta/proxy/status")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let bytes = body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json["data"]["listen_port"].as_u64().is_some());
+}
+
+#[tokio::test]
+async fn sessions_should_track_timestamps() {
+    setup_env();
+    let app = create_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/porta/service/sessions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let bytes = body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json.get("data").is_some());
+}
