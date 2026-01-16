@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Create GitHub Release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Porta v${{ steps.get_version.outputs.version }}
+          draft: true
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') || contains(github.ref, 'rc') }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Build Desktop App (Tauri)
+  build-desktop:
+    name: Build Desktop (${{ matrix.platform }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - platform: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - platform: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - platform: linux-arm64
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsqlite3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+
+  # Build Server Binary
+  build-server:
+    name: Build Server (${{ matrix.platform }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: porta-server
+            asset_name: porta-server-macos-arm64
+          - platform: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: porta-server
+            asset_name: porta-server-macos-x64
+          - platform: linux-x64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            artifact_name: porta-server
+            asset_name: porta-server-linux-x64
+          - platform: linux-arm64
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            artifact_name: porta-server
+            asset_name: porta-server-linux-arm64
+            use_cross: true
+          - platform: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: porta-server.exe
+            asset_name: porta-server-windows-x64.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (for cross-compilation)
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux' && !matrix.use_cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev
+
+      - name: Build server (native)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --manifest-path server/Cargo.toml --release --target ${{ matrix.target }}
+
+      - name: Build server (cross)
+        if: matrix.use_cross
+        run: cross build --manifest-path server/Cargo.toml --release --target ${{ matrix.target }}
+
+      - name: Package server (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd server/target/${{ matrix.target }}/release
+          tar czvf ${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          cp ${{ matrix.asset_name }}.tar.gz ${{ github.workspace }}/
+
+      - name: Package server (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd server/target/${{ matrix.target }}/release
+          7z a ${{ matrix.asset_name }}.zip ${{ matrix.artifact_name }}
+          Copy-Item ${{ matrix.asset_name }}.zip ${{ github.workspace }}/
+
+      - name: Upload server artifact (Unix)
+        if: runner.os != 'Windows'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.asset_name }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload server artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ${{ matrix.asset_name }}.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Upload systemd service file
+  upload-extras:
+    name: Upload Extra Files
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Package service files
+        run: |
+          mkdir -p porta-service
+          cp server/porta.service porta-service/
+          cp server/porta.toml.example porta-service/
+          cp server/install.sh porta-service/
+          tar czvf porta-service-files.tar.gz porta-service
+
+      - name: Upload service files
+        uses: softprops/action-gh-release@v1
+        with:
+          files: porta-service-files.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
