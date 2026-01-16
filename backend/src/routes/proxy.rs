@@ -17,26 +17,22 @@ async fn get_proxy_status(State(state): State<AppState>) -> impl axum::response:
     }
 }
 
-async fn ok() -> impl axum::response::IntoResponse {
-    resp::ok::<()> (None)
-}
-
 async fn enable_proxy(
     State(state): State<AppState>,
     Json(_): Json<ProxyToggle>,
 ) -> impl axum::response::IntoResponse {
-    match state.store.set_proxy_enabled(true).await {
-        Ok(()) => ok().await,
-        Err(err) => resp::err(&format!("启用代理失败: {}", err)),
+    if let Err(err) = state.store.set_proxy_enabled(true).await {
+        return resp::err(&format!("启用代理失败: {}", err));
     }
+    resp::ok::<()> (None)
 }
 
 async fn disable_proxy(
     State(state): State<AppState>,
     Json(_): Json<ProxyToggle>,
 ) -> impl axum::response::IntoResponse {
-    match state.store.set_proxy_enabled(false).await {
-        Ok(()) => ok().await,
-        Err(err) => resp::err(&format!("禁用代理失败: {}", err)),
+    if let Err(err) = state.store.set_proxy_enabled(false).await {
+        return resp::err(&format!("禁用代理失败: {}", err));
     }
+    resp::ok::<()> (None)
 }
