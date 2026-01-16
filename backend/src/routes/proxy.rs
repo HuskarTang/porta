@@ -21,8 +21,14 @@ async fn enable_proxy(
     State(state): State<AppState>,
     Json(_): Json<ProxyToggle>,
 ) -> impl axum::response::IntoResponse {
+    if let Err(err) = state.proxy_server.start().await {
+        return resp::err(&format!("启动代理失败: {}", err));
+    }
     if let Err(err) = state.store.set_proxy_enabled(true).await {
         return resp::err(&format!("启用代理失败: {}", err));
+    }
+    if let Err(err) = state.app.publish_proxy_service().await {
+        return resp::err(&format!("发布代理服务失败: {}", err));
     }
     resp::ok::<()> (None)
 }
@@ -31,8 +37,14 @@ async fn disable_proxy(
     State(state): State<AppState>,
     Json(_): Json<ProxyToggle>,
 ) -> impl axum::response::IntoResponse {
+    if let Err(err) = state.proxy_server.stop().await {
+        return resp::err(&format!("停止代理失败: {}", err));
+    }
     if let Err(err) = state.store.set_proxy_enabled(false).await {
         return resp::err(&format!("禁用代理失败: {}", err));
+    }
+    if let Err(err) = state.app.unpublish_proxy_service().await {
+        return resp::err(&format!("下架代理服务失败: {}", err));
     }
     resp::ok::<()> (None)
 }

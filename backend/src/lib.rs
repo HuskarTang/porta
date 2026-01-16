@@ -6,6 +6,7 @@ pub mod state;
 pub mod response;
 pub mod resp;
 pub mod tunnel;
+pub mod proxy;
 
 use axum::Router;
 use state::AppState;

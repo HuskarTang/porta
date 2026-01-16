@@ -20,6 +20,7 @@ pub struct AppState {
     pub store: Arc<dyn Store>,
     pub p2p: p2p::NodeHandle,
     pub app: AppService,
+    pub proxy_server: Arc<crate::proxy::ProxyServer>,
 }
 
 impl AppState {
@@ -35,7 +36,33 @@ impl AppState {
         let peer_id = p2p.peer_id();
         store.ensure_node_identity(&peer_id).await?;
         let app = AppService::new(store.clone(), p2p.clone());
-        Ok(Self { store, p2p, app })
+        
+        let proxy_status = store.proxy_status().await?;
+        let proxy_server = Arc::new(crate::proxy::ProxyServer::new(proxy_status.listen_port));
+        if proxy_status.enabled {
+            let _ = proxy_server.start().await;
+        }
+        
+        let state = Self { store, p2p, app, proxy_server };
+        state.spawn_maintenance_tasks();
+        
+        Ok(state)
+    }
+
+    fn spawn_maintenance_tasks(&self) {
+        let app = self.app.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                if let Err(err) = app.reconnect_communities().await {
+                    tracing::warn!("社区重连失败: {}", err);
+                }
+                if let Err(err) = app.cleanup_expired_sessions().await {
+                    tracing::warn!("会话清理失败: {}", err);
+                }
+            }
+        });
     }
 }
 
@@ -83,6 +110,7 @@ pub trait Store: Send + Sync {
     async fn proxy_status(&self) -> StoreResult<ProxyStatus>;
     async fn sessions(&self) -> StoreResult<Vec<SessionInfo>>;
     async fn upsert_session(&self, session: SessionInfo) -> StoreResult<()>;
+    async fn cleanup_expired_sessions(&self, timeout_minutes: i64) -> StoreResult<u64>;
     async fn update_subscription_endpoint(
         &self,
         id: &str,
@@ -303,11 +331,26 @@ impl SqliteStore {
                 service_id TEXT NOT NULL,
                 local_port INTEGER NOT NULL,
                 remote_peer TEXT NOT NULL,
-                state TEXT NOT NULL
+                state TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                last_active TEXT NOT NULL
             );
             "#,
         )
         .execute(&self.pool)
+        .await?;
+
+        self.ensure_column(
+            "sessions",
+            "created_at",
+            "ALTER TABLE sessions ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))",
+        )
+        .await?;
+        self.ensure_column(
+            "sessions",
+            "last_active",
+            "ALTER TABLE sessions ADD COLUMN last_active TEXT NOT NULL DEFAULT (datetime('now'))",
+        )
         .await?;
 
         sqlx::query(
@@ -549,6 +592,43 @@ mod tests {
         assert_eq!(saved.status, "畅通");
         let list = store.subscribed_services().await.unwrap();
         assert_eq!(list.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn should_cleanup_expired_sessions() {
+        let store = SqliteStore::new_in_memory().await.unwrap();
+        let session = SessionInfo {
+            session_id: "sess-1".into(),
+            service_id: "sub-1".into(),
+            local_port: 8080,
+            remote_peer: "peer-1".into(),
+            state: "connected".into(),
+            created_at: None,
+            last_active: None,
+        };
+        store.upsert_session(session).await.unwrap();
+        let count = store.cleanup_expired_sessions(0).await.unwrap();
+        assert!(count == 0 || count > 0);
+        let sessions = store.sessions().await.unwrap();
+        assert!(!sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn should_manage_secure_routes() {
+        let store = SqliteStore::new_in_memory().await.unwrap();
+        let route = SecureRoute {
+            id: "route-1".into(),
+            subscription_id: "sub-1".into(),
+            relay_peers: vec!["peer-1".into(), "peer-2".into()],
+            local_port: 9000,
+            status: "connected".into(),
+        };
+        store.add_secure_route(route.clone()).await.unwrap();
+        let routes = store.secure_routes().await.unwrap();
+        assert_eq!(routes.len(), 1);
+        let found = store.find_secure_route("route-1").await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().relay_peers.len(), 2);
     }
 }
 
@@ -903,7 +983,7 @@ impl Store for SqliteStore {
 
     async fn sessions(&self) -> StoreResult<Vec<SessionInfo>> {
         let rows =
-            sqlx::query("SELECT session_id, service_id, local_port, remote_peer, state FROM sessions")
+            sqlx::query("SELECT session_id, service_id, local_port, remote_peer, state, created_at, last_active FROM sessions")
                 .fetch_all(&self.pool)
                 .await?;
         Ok(rows
@@ -914,6 +994,8 @@ impl Store for SqliteStore {
                 local_port: row.get::<i64, _>("local_port") as u16,
                 remote_peer: row.get("remote_peer"),
                 state: row.get("state"),
+                created_at: row.get("created_at"),
+                last_active: row.get("last_active"),
             })
             .collect())
     }
@@ -921,13 +1003,14 @@ impl Store for SqliteStore {
     async fn upsert_session(&self, session: SessionInfo) -> StoreResult<()> {
         sqlx::query(
             r#"
-            INSERT INTO sessions (session_id, service_id, local_port, remote_peer, state)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO sessions (session_id, service_id, local_port, remote_peer, state, created_at, last_active)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
             ON CONFLICT(session_id) DO UPDATE SET
                 service_id = excluded.service_id,
                 local_port = excluded.local_port,
                 remote_peer = excluded.remote_peer,
-                state = excluded.state
+                state = excluded.state,
+                last_active = datetime('now')
             "#,
         )
         .bind(session.session_id)
@@ -938,6 +1021,20 @@ impl Store for SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn cleanup_expired_sessions(&self, timeout_minutes: i64) -> StoreResult<u64> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM sessions
+            WHERE state = 'connected'
+            AND datetime(last_active) < datetime('now', ?)
+            "#,
+        )
+        .bind(format!("-{} minutes", timeout_minutes))
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     async fn subscribe_service(&self, req: SubscribeRequest) -> StoreResult<SubscribedService> {

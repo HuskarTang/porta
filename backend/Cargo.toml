@@ -16,6 +16,9 @@ uuid = { version = "1.8", features = ["v4", "serde"] }
 anyhow = "1.0"
 tokio-util = { version = "0.7", features = ["compat"] }
 libp2p-stream = "0.2.0-alpha"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = "0.4"
 
 [dev-dependencies]
 tower = "0.5"

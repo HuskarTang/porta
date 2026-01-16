@@ -114,7 +114,9 @@ impl NodeHandle {
                                 let peer = peer_id_from_addr(&addr)
                                     .ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"));
                                 if let Ok(peer_id) = peer {
-                                    if let Err(err) = swarm.dial(addr) {
+                                    tracing::debug!("拨号到 peer: {}", peer_id);
+                                    if let Err(err) = swarm.dial(addr.clone()) {
+                                        tracing::warn!("拨号失败 {}: {:?}", addr, err);
                                         let _ = respond_to.send(Err(err.into()));
                                     } else {
                                         let _ = respond_to.send(Ok(peer_id));
@@ -229,20 +231,27 @@ async fn handle_incoming_stream(
     mut stream_control: StreamControl,
 ) {
     if store.peer_is_banned(&peer.to_string()).await.unwrap_or(false) {
+        tracing::warn!("拒绝已封禁 peer {} 的 stream", peer);
         return;
     }
     let role = store.peer_role(&peer.to_string()).await.ok().flatten();
     if role.as_deref() != Some("edge") {
+        tracing::warn!("拒绝非 edge 角色 peer {} 的 stream", peer);
         return;
     }
     let protocol = match read_service_uuid(&mut stream).await {
         Ok(uuid) => uuid,
-        Err(_) => return,
+        Err(err) => {
+            tracing::error!("读取协议失败: {:?}", err);
+            return;
+        }
     };
+    tracing::debug!("收到 peer {} 的 stream 请求: {}", peer, protocol);
     
     if protocol.contains("|relay:") {
         let parts: Vec<&str> = protocol.split("|relay:").collect();
         if parts.len() != 2 {
+            tracing::warn!("无效的中继协议格式: {}", protocol);
             return;
         }
         let service_uuid = parts[0];
@@ -252,6 +261,7 @@ async fn handle_incoming_stream(
         }
         let next_hop = relay_peers[0];
         let remaining_chain = &relay_peers[1..];
+        tracing::info!("中继转发: {} -> {}, 剩余 {} 跳", peer, next_hop, remaining_chain.len());
         let next_protocol_str = if remaining_chain.is_empty() {
             service_uuid.to_string()
         } else {
@@ -259,12 +269,19 @@ async fn handle_incoming_stream(
         };
         let next_protocol_static: &'static str = Box::leak(next_protocol_str.into_boxed_str());
         let Ok(next_peer) = next_hop.parse::<PeerId>() else {
+            tracing::error!("无效的下一跳 peerId: {}", next_hop);
             return;
         };
-        if let Ok(outbound) = stream_control.open_stream(next_peer, StreamProtocol::new(next_protocol_static)).await {
-            let mut inbound = stream.compat();
-            let mut outbound = outbound.compat();
-            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+        match stream_control.open_stream(next_peer, StreamProtocol::new(next_protocol_static)).await {
+            Ok(outbound) => {
+                let mut inbound = stream.compat();
+                let mut outbound = outbound.compat();
+                let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                tracing::debug!("中继转发完成");
+            }
+            Err(err) => {
+                tracing::error!("打开下一跳 stream 失败: {:?}", err);
+            }
         }
     } else {
         let Some(service) = store
@@ -273,12 +290,26 @@ async fn handle_incoming_stream(
             .ok()
             .flatten()
         else {
+            tracing::warn!("未找到服务: {}", protocol);
             return;
         };
         let target = format!("127.0.0.1:{}", service.port);
-        if let Ok(mut socket) = tokio::net::TcpStream::connect(target).await {
-            let mut stream = stream.compat();
-            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+        tracing::info!("转发 stream 到本地服务: {} -> {}", protocol, target);
+        match tokio::net::TcpStream::connect(&target).await {
+            Ok(mut socket) => {
+                let mut stream = stream.compat();
+                match tokio::io::copy_bidirectional(&mut socket, &mut stream).await {
+                    Ok((sent, received)) => {
+                        tracing::debug!("服务 {} 转发完成: 发送 {} 字节, 接收 {} 字节", protocol, sent, received);
+                    }
+                    Err(err) => {
+                        tracing::error!("服务 {} 转发失败: {}", protocol, err);
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::error!("连接本地服务 {} 失败: {}", target, err);
+            }
         }
     }
 }
@@ -288,6 +319,7 @@ async fn handle_inbound_request(
     peer: &PeerId,
     request: P2pRequest,
 ) -> P2pResponse {
+    tracing::debug!("收到 peer {} 的请求: {:?}", peer, std::mem::discriminant(&request));
     match request {
         P2pRequest::Hello { hello } => {
             if hello.node_id.trim().is_empty() {

@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use libp2p::{Multiaddr, PeerId};
+use tokio::sync::RwLock;
 
 use crate::{
     models::{
@@ -18,11 +19,16 @@ use crate::{
 pub struct AppService {
     store: Arc<dyn Store>,
     p2p: crate::p2p::NodeHandle,
+    peer_cache: Arc<RwLock<HashMap<String, PeerId>>>,
 }
 
 impl AppService {
     pub fn new(store: Arc<dyn Store>, p2p: crate::p2p::NodeHandle) -> Self {
-        Self { store, p2p }
+        Self {
+            store,
+            p2p,
+            peer_cache: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     pub async fn add_community(&self, mut req: CommunityAddRequest) -> Result<CommunitySummary> {
@@ -53,7 +59,8 @@ impl AppService {
             }
             req.peer_id = Some(peer_id.to_string());
         }
-        let saved = self.store.add_community(req).await?;
+        let saved = self.store.add_community(req.clone()).await?;
+        tracing::info!("新增社区: {} ({})", saved.name, saved.id);
         Ok(saved)
     }
 
@@ -67,8 +74,10 @@ impl AppService {
     }
 
     pub async fn connect_community(&self, id: &str) -> Result<()> {
-        let _ = self.ensure_community_peer(id).await?;
+        tracing::info!("正在连接社区: {}", id);
+        let peer_id = self.ensure_community_peer(id).await?;
         self.store.connect_community(id).await?;
+        tracing::info!("社区 {} 连接成功 (peer: {})", id, peer_id);
         Ok(())
     }
 
@@ -79,6 +88,7 @@ impl AppService {
         let Some(community_id) = community_id else {
             return Ok(self.store.discovered_services(None).await?);
         };
+        tracing::info!("发现服务: 社区 {}", community_id);
         let peer_id = self.ensure_community_peer(&community_id).await?;
         let response = self
             .p2p
@@ -91,9 +101,13 @@ impl AppService {
             .await?;
         let services = match response {
             P2pResponse::ServiceList { services } => services,
-            P2pResponse::Error { message } => return Err(anyhow!(message)),
+            P2pResponse::Error { message } => {
+                tracing::error!("服务发现失败: {}", message);
+                return Err(anyhow!(message));
+            }
             _ => Vec::new(),
         };
+        tracing::info!("从社区 {} 发现 {} 个服务", community_id, services.len());
         let registry = services
             .into_iter()
             .map(|svc| ServiceRegistryItem {
@@ -130,26 +144,32 @@ impl AppService {
         if req.service_uuid.is_none() {
             return Err(anyhow!("缺少 service_uuid"));
         }
+        tracing::info!("订阅服务: {}", req.name);
         let saved = self.store.subscribe_service(req.clone()).await?;
         if let Some(service_uuid) = req.service_uuid {
             if let Some(community_id) = self.find_community_for_service(&service_uuid).await? {
                 let peer_id = self.ensure_community_peer(&community_id).await?;
-                let _ = self
+                match self
                     .p2p
                     .request(
                         peer_id,
                         P2pRequest::SubscribeService {
-                            service_uuid,
+                            service_uuid: service_uuid.clone(),
                             subscriber_peer: self.p2p.peer_id(),
                         },
                     )
-                    .await?;
+                    .await
+                {
+                    Ok(_) => tracing::info!("服务 {} 订阅成功", service_uuid),
+                    Err(err) => tracing::warn!("服务 {} 订阅通知失败: {}", service_uuid, err),
+                }
             }
         }
         Ok(saved)
     }
 
     pub async fn connect_service(&self, id: &str) -> Result<()> {
+        tracing::info!("正在连接服务: {}", id);
         let Some(subscription) = self.store.find_subscription(id).await? else {
             return Err(anyhow!("未找到订阅"));
         };
@@ -179,7 +199,10 @@ impl AppService {
                 port,
                 ..
             } => (provider_peer, provider_addr, port),
-            P2pResponse::Error { message } => return Err(anyhow!(message)),
+            P2pResponse::Error { message } => {
+                tracing::error!("服务连接被拒绝: {}", message);
+                return Err(anyhow!(message));
+            }
             _ => return Err(anyhow!("连接失败")),
         };
         let remote_addr = compose_remote_addr(&provider_addr, port);
@@ -196,6 +219,8 @@ impl AppService {
             local_port,
             remote_peer: remote_addr.clone(),
             state: "connected".into(),
+            created_at: None,
+            last_active: None,
         };
         self.store.upsert_session(session).await?;
         let peer_id: PeerId = provider_peer.parse()?;
@@ -206,10 +231,12 @@ impl AppService {
             self.p2p.clone(),
         )
         .await?;
+        tracing::info!("服务 {} 连接成功，本地端口: {}", id, local_port);
         Ok(())
     }
 
     pub async fn disconnect_service(&self, id: &str) -> Result<()> {
+        tracing::info!("正在断开服务: {}", id);
         self.store.update_subscription_status(id, "断开").await?;
         let session = SessionInfo {
             session_id: format!("sess-{}", id),
@@ -217,12 +244,16 @@ impl AppService {
             local_port: 0,
             remote_peer: "".into(),
             state: "closed".into(),
+            created_at: None,
+            last_active: None,
         };
         self.store.upsert_session(session).await?;
+        tracing::info!("服务 {} 已断开", id);
         Ok(())
     }
 
     pub async fn publish_service(&self, req: PublishRequest) -> Result<PublishedService> {
+        tracing::info!("发布服务: {} ({}:{})", req.name, req.r#type, req.port);
         let published = self.store.publish_service(req.clone()).await?;
         let node = self.store.node_info().await?;
         let provider_addr = node
@@ -231,9 +262,10 @@ impl AppService {
             .cloned()
             .unwrap_or_else(|| "127.0.0.1".into());
         let communities = self.store.communities().await?;
+        let mut publish_count = 0;
         for community in communities.into_iter().filter(|c| c.joined) {
             if let Ok(peer_id) = self.ensure_community_peer(&community.id).await {
-                let _ = self
+                match self
                     .p2p
                     .request(
                         peer_id,
@@ -249,9 +281,17 @@ impl AppService {
                             },
                         },
                     )
-                    .await;
+                    .await
+                {
+                    Ok(_) => {
+                        publish_count += 1;
+                        tracing::debug!("服务已发布到社区: {}", community.id);
+                    }
+                    Err(err) => tracing::warn!("向社区 {} 发布失败: {}", community.id, err),
+                }
             }
         }
+        tracing::info!("服务 {} 发布完成，已同步到 {} 个社区", published.name, publish_count);
         Ok(published)
     }
 
@@ -290,6 +330,14 @@ impl AppService {
     }
 
     async fn ensure_community_peer(&self, community_id: &str) -> Result<PeerId> {
+        {
+            let cache = self.peer_cache.read().await;
+            if let Some(cached_peer) = cache.get(community_id) {
+                tracing::debug!("使用缓存的 peer: {} -> {}", community_id, cached_peer);
+                return Ok(*cached_peer);
+            }
+        }
+
         let Some(community) = self.store.community_by_id(community_id).await? else {
             return Err(anyhow!("未找到社区"));
         };
@@ -322,6 +370,11 @@ impl AppService {
             P2pResponse::Error { message } => return Err(anyhow!(message)),
             _ => return Err(anyhow!("握手失败")),
         }
+
+        let mut cache = self.peer_cache.write().await;
+        cache.insert(community_id.to_string(), peer_id);
+        tracing::debug!("缓存 peer: {} -> {}", community_id, peer_id);
+
         Ok(peer_id)
     }
 
@@ -329,6 +382,7 @@ impl AppService {
         if req.relay_peers.len() < 2 {
             return Err(anyhow!("至少需要两个中继节点"));
         }
+        tracing::info!("建立安全连接: 订阅 {} 经由 {} 个中继", req.subscription_id, req.relay_peers.len());
         let Some(subscription) = self.store.find_subscription(&req.subscription_id).await? else {
             return Err(anyhow!("未找到订阅"));
         };
@@ -355,9 +409,16 @@ impl AppService {
             )
             .await?;
         match response {
-            P2pResponse::RelayRouteReady { .. } => {}
-            P2pResponse::ConnectInfo { .. } => {}
-            P2pResponse::Error { message } => return Err(anyhow!(message)),
+            P2pResponse::RelayRouteReady { .. } => {
+                tracing::debug!("中继链路已就绪");
+            }
+            P2pResponse::ConnectInfo { .. } => {
+                tracing::debug!("获取到服务连接信息");
+            }
+            P2pResponse::Error { message } => {
+                tracing::error!("建立中继链路失败: {}", message);
+                return Err(anyhow!(message));
+            }
             _ => return Err(anyhow!("建立中继链路失败")),
         }
         let route_id = format!("secure-{}", uuid::Uuid::new_v4());
@@ -373,10 +434,11 @@ impl AppService {
             local_port,
             first_peer,
             service_uuid,
-            req.relay_peers,
+            req.relay_peers.clone(),
             self.p2p.clone(),
         )
         .await?;
+        tracing::info!("安全路由 {} 建立成功，本地端口: {}", route_id, local_port);
         Ok(route)
     }
 
@@ -384,6 +446,67 @@ impl AppService {
         let updated = self.store.update_secure_route_status(id, "断开").await?;
         if !updated {
             return Err(anyhow!("未找到安全路由"));
+        }
+        Ok(())
+    }
+
+    pub async fn publish_proxy_service(&self) -> Result<()> {
+        let proxy_status = self.store.proxy_status().await?;
+        let req = PublishRequest {
+            id: Some("proxy-omega".into()),
+            name: "Omega 代理".into(),
+            r#type: "omega".into(),
+            port: proxy_status.listen_port,
+            summary: "HTTP/HTTPS/SOCKS5 代理服务".into(),
+        };
+        let _ = self.publish_service(req).await?;
+        Ok(())
+    }
+
+    pub async fn unpublish_proxy_service(&self) -> Result<()> {
+        let _ = self.unpublish_service("proxy-omega").await;
+        Ok(())
+    }
+
+    pub async fn reconnect_communities(&self) -> Result<()> {
+        let communities = self.store.communities().await?;
+        for community in communities.into_iter().filter(|c| c.joined) {
+            if let Some(addr) = community.multiaddr.clone() {
+                let addr: Multiaddr = match addr.parse() {
+                    Ok(a) => a,
+                    Err(_) => {
+                        tracing::warn!("无效的社区 multiaddr: {}", community.id);
+                        continue;
+                    }
+                };
+                let expected_peer = match extract_peer_id(&addr) {
+                    Some(p) => p,
+                    None => {
+                        tracing::warn!("社区缺少 peerId: {}", community.id);
+                        continue;
+                    }
+                };
+                match self.p2p.dial(addr.clone()).await {
+                    Ok(peer_id) if peer_id == expected_peer => {
+                        tracing::debug!("社区 {} 连接保活成功", community.id);
+                    }
+                    Ok(peer_id) => {
+                        tracing::warn!("社区 {} peerId 不匹配: 期望 {}, 实际 {}", community.id, expected_peer, peer_id);
+                    }
+                    Err(err) => {
+                        tracing::warn!("社区 {} 连接失败: {}", community.id, err);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn cleanup_expired_sessions(&self) -> Result<()> {
+        let timeout_minutes = 30;
+        let removed = self.store.cleanup_expired_sessions(timeout_minutes).await?;
+        if removed > 0 {
+            tracing::info!("清理过期会话 {} 个", removed);
         }
         Ok(())
     }
