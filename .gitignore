@@ -6,3 +6,4 @@ backend/.cargo
 .cargo
 src-tauri/target
 .cargo
+server/target

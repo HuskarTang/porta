@@ -2,6 +2,11 @@
 name = "porta-backend"
 version = "0.1.0"
 edition = "2021"
+description = "Porta P2P backend library - shared core for desktop and server packages"
+
+[lib]
+name = "porta_backend"
+path = "src/lib.rs"
 
 [dependencies]
 axum = "0.7"

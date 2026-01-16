@@ -12,7 +12,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-BACKEND_DIR="$PROJECT_ROOT/backend"
+SERVER_DIR="$PROJECT_ROOT/server"
 
 # Colors for output
 RED='\033[0;31m'
@@ -90,20 +90,18 @@ cleanup() {
 }
 
 build_backend() {
-    print_header "Building backend (release mode)"
-    cd "$BACKEND_DIR"
+    print_header "Building server (release mode)"
+    cd "$SERVER_DIR"
     cargo build --release
-    print_success "Backend built successfully"
+    print_success "Server built successfully"
 }
 
 start_community_node() {
     print_info "Starting CommunityNode on port $COMMUNITY_PORT..."
     
-    PORTA_DB="$COMMUNITY_DB" \
-    PORTA_ROLE="community" \
-    PORTA_PORT="$COMMUNITY_PORT" \
-    RUST_LOG="porta_backend=info" \
-    "$BACKEND_DIR/target/release/porta-backend" &
+    "$SERVER_DIR/target/release/porta-server" \
+        --port "$COMMUNITY_PORT" \
+        --log-level info &
     
     echo $! > "$COMMUNITY_PID"
     sleep 2
@@ -119,11 +117,9 @@ start_community_node() {
 start_edge_node1() {
     print_info "Starting EdgeNode1 on port $EDGE1_PORT..."
     
-    PORTA_DB="$EDGE1_DB" \
-    PORTA_ROLE="edge" \
-    PORTA_PORT="$EDGE1_PORT" \
-    RUST_LOG="porta_backend=info" \
-    "$BACKEND_DIR/target/release/porta-backend" &
+    "$SERVER_DIR/target/release/porta-server" \
+        --port "$EDGE1_PORT" \
+        --log-level info &
     
     echo $! > "$EDGE1_PID"
     sleep 2
@@ -139,11 +135,9 @@ start_edge_node1() {
 start_edge_node2() {
     print_info "Starting EdgeNode2 on port $EDGE2_PORT..."
     
-    PORTA_DB="$EDGE2_DB" \
-    PORTA_ROLE="edge" \
-    PORTA_PORT="$EDGE2_PORT" \
-    RUST_LOG="porta_backend=info" \
-    "$BACKEND_DIR/target/release/porta-backend" &
+    "$SERVER_DIR/target/release/porta-server" \
+        --port "$EDGE2_PORT" \
+        --log-level info &
     
     echo $! > "$EDGE2_PID"
     sleep 2
@@ -183,10 +177,9 @@ start_single_node() {
     
     print_info "Starting EdgeNode on port $EDGE1_PORT..."
     
-    PORTA_DB=":memory:" \
-    PORTA_ROLE="edge" \
-    RUST_LOG="porta_backend=info" \
-    "$BACKEND_DIR/target/release/porta-backend" > "$EDGE1_LOG" 2>&1 &
+    "$SERVER_DIR/target/release/porta-server" \
+        --port "$EDGE1_PORT" \
+        --log-level info > "$EDGE1_LOG" 2>&1 &
     
     echo $! > "$EDGE1_PID"
     

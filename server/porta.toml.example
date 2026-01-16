@@ -1,0 +1,53 @@
+# Porta Server Configuration
+# Copy this file to /etc/porta/porta.toml or ~/.config/porta/porta.toml
+
+# =============================================================================
+# HTTP API Server Settings
+# =============================================================================
+[server]
+# Address to listen on (0.0.0.0 for all interfaces, 127.0.0.1 for local only)
+listen_addr = "0.0.0.0"
+# Port for the HTTP API
+port = 8090
+
+# =============================================================================
+# Node Identity Settings
+# =============================================================================
+[node]
+# Display name for this node
+name = "Porta Server"
+# Node role: "edge" (client/publisher) or "community" (registry/coordinator)
+role = "edge"
+
+# =============================================================================
+# Database Settings
+# =============================================================================
+[database]
+# Path to SQLite database file
+# Use absolute path for production, e.g., /var/lib/porta/data.db
+path = "porta.db"
+
+# =============================================================================
+# P2P Network Settings
+# =============================================================================
+[p2p]
+# TCP port for P2P connections
+tcp_port = 9000
+# QUIC port for P2P connections
+quic_port = 9001
+# Enable mDNS for local network peer discovery
+mdns_enable = true
+# Enable DHT for distributed peer discovery
+dht_enable = true
+# External addresses to advertise (for NAT traversal)
+# Example: ["192.168.1.100:9000", "example.com:9000"]
+external_addrs = []
+
+# =============================================================================
+# Logging Settings
+# =============================================================================
+[logging]
+# Log level: trace, debug, info, warn, error
+level = "info"
+# Log format: compact, pretty, json
+format = "compact"

@@ -1,0 +1,32 @@
+[package]
+name = "porta-server"
+version = "0.1.0"
+edition = "2021"
+description = "Porta P2P Server - headless service mode"
+authors = ["Porta Team"]
+
+[[bin]]
+name = "porta-server"
+path = "src/main.rs"
+
+[dependencies]
+# Core backend library
+porta-backend = { path = "../backend" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["full", "signal"] }
+axum = "0.7"
+
+# Configuration
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+
+# CLI argument parsing
+clap = { version = "4.4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1.0"
