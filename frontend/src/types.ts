@@ -66,3 +66,11 @@ export interface CommunityService {
   online: boolean;
   announced: boolean;
 }
+
+export interface SecureRoute {
+  id: string;
+  subscription_id: string;
+  relay_peers: string[];
+  local_port: number;
+  status: string;
+}

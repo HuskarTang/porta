@@ -10,10 +10,13 @@ use libp2p::{
         Behaviour as RequestResponse, Config as RequestResponseConfig, Event as RequestResponseEvent,
         Message as RequestResponseMessage, OutboundRequestId, ProtocolSupport,
     },
-    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
+    swarm::{NetworkBehaviour, Swarm, SwarmEvent, Stream, StreamProtocol},
     tcp, yamux, Multiaddr, PeerId, Transport,
 };
+use libp2p_stream::{Behaviour as StreamBehaviour, Control as StreamControl};
 use tokio::sync::{mpsc, oneshot};
+use libp2p::futures::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use crate::{
     models::ServiceRegistryItem,
@@ -21,12 +24,14 @@ use crate::{
 };
 
 use super::protocol::{JsonCodec, P2pRequest, P2pResponse, PortaProtocol, ServiceAnnouncement};
+use super::STREAM_PROTOCOL;
 
 #[derive(NetworkBehaviour)]
 struct PortaBehaviour {
     request_response: RequestResponse<JsonCodec>,
     ping: ping::Behaviour,
     identify: identify::Behaviour,
+    stream: StreamBehaviour,
 }
 
 enum Command {
@@ -45,6 +50,7 @@ enum Command {
 pub struct NodeHandle {
     sender: mpsc::Sender<Command>,
     peer_id: String,
+    stream_control: Arc<tokio::sync::Mutex<StreamControl>>,
 }
 
 impl NodeHandle {
@@ -62,12 +68,15 @@ impl NodeHandle {
         let protocols = std::iter::once((PortaProtocol("/porta/req/1"), ProtocolSupport::Full));
         let request_response = RequestResponse::new(protocols, rr_config);
 
+        let stream = StreamBehaviour::new();
+        let mut stream_control = stream.new_control();
         let behaviour = PortaBehaviour {
             request_response,
             ping: ping::Behaviour::new(ping::Config::new()),
             identify: identify::Behaviour::new(
                 identify::Config::new("/porta/1.0".into(), keypair.public()),
             ),
+            stream,
         };
 
         let mut swarm = Swarm::new(
@@ -83,6 +92,19 @@ impl NodeHandle {
             HashMap::new();
 
         let store_clone = store.clone();
+        let mut incoming = match stream_control.accept(StreamProtocol::new(STREAM_PROTOCOL)) {
+            Ok(incoming) => incoming,
+            Err(_) => {
+                return Err(anyhow!("重复注册 stream 协议"));
+            }
+        };
+        let store_for_streams = store.clone();
+        let stream_control_for_relay = stream_control.clone();
+        tokio::spawn(async move {
+            while let Some((peer, stream)) = incoming.next().await {
+                handle_incoming_stream(peer, stream, &store_for_streams, stream_control_for_relay.clone()).await;
+            }
+        });
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -120,6 +142,7 @@ impl NodeHandle {
         Ok(Self {
             sender,
             peer_id: peer_id.to_string(),
+            stream_control: Arc::new(tokio::sync::Mutex::new(stream_control)),
         })
     }
 
@@ -147,6 +170,17 @@ impl NodeHandle {
 
     pub fn peer_id(&self) -> String {
         self.peer_id.clone()
+    }
+
+    pub async fn open_stream(&self, peer: PeerId, service_uuid: &str) -> Result<Stream> {
+        let protocol = StreamProtocol::new(STREAM_PROTOCOL);
+        let mut control = self.stream_control.lock().await;
+        let mut stream = control
+            .open_stream(peer, protocol)
+            .await
+            .map_err(|err| anyhow!("打开流失败: {}", err))?;
+        write_service_uuid(&mut stream, service_uuid).await?;
+        Ok(stream)
     }
 }
 
@@ -185,6 +219,67 @@ async fn handle_request_response_event(
             let _ = error;
         }
         RequestResponseEvent::ResponseSent { .. } => {}
+    }
+}
+
+async fn handle_incoming_stream(
+    peer: PeerId,
+    mut stream: Stream,
+    store: &Arc<dyn Store>,
+    mut stream_control: StreamControl,
+) {
+    if store.peer_is_banned(&peer.to_string()).await.unwrap_or(false) {
+        return;
+    }
+    let role = store.peer_role(&peer.to_string()).await.ok().flatten();
+    if role.as_deref() != Some("edge") {
+        return;
+    }
+    let protocol = match read_service_uuid(&mut stream).await {
+        Ok(uuid) => uuid,
+        Err(_) => return,
+    };
+    
+    if protocol.contains("|relay:") {
+        let parts: Vec<&str> = protocol.split("|relay:").collect();
+        if parts.len() != 2 {
+            return;
+        }
+        let service_uuid = parts[0];
+        let relay_peers: Vec<&str> = parts[1].split(',').collect();
+        if relay_peers.is_empty() {
+            return;
+        }
+        let next_hop = relay_peers[0];
+        let remaining_chain = &relay_peers[1..];
+        let next_protocol_str = if remaining_chain.is_empty() {
+            service_uuid.to_string()
+        } else {
+            format!("{}|relay:{}", service_uuid, remaining_chain.join(","))
+        };
+        let next_protocol_static: &'static str = Box::leak(next_protocol_str.into_boxed_str());
+        let Ok(next_peer) = next_hop.parse::<PeerId>() else {
+            return;
+        };
+        if let Ok(outbound) = stream_control.open_stream(next_peer, StreamProtocol::new(next_protocol_static)).await {
+            let mut inbound = stream.compat();
+            let mut outbound = outbound.compat();
+            let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+        }
+    } else {
+        let Some(service) = store
+            .published_service_by_id(&protocol)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return;
+        };
+        let target = format!("127.0.0.1:{}", service.port);
+        if let Ok(mut socket) = tokio::net::TcpStream::connect(target).await {
+            let mut stream = stream.compat();
+            let _ = tokio::io::copy_bidirectional(&mut socket, &mut stream).await;
+        }
     }
 }
 
@@ -368,6 +463,31 @@ async fn handle_inbound_request(
                 },
             }
         }
+        P2pRequest::BuildRelayRoute {
+            service_uuid,
+            relay_chain,
+            initiator_peer: _,
+        } => {
+            if relay_chain.is_empty() {
+                match store.resolve_service_registry(&service_uuid).await {
+                    Ok(Some(service)) => P2pResponse::ConnectInfo {
+                        provider_peer: service.provider_peer,
+                        provider_addr: service.provider_addr,
+                        port: service.port,
+                    },
+                    Ok(None) => P2pResponse::Error {
+                        message: "未找到服务".into(),
+                    },
+                    Err(err) => P2pResponse::Error {
+                        message: format!("解析服务失败: {}", err),
+                    },
+                }
+            } else {
+                P2pResponse::RelayRouteReady {
+                    next_hop: relay_chain.first().cloned(),
+                }
+            }
+        }
         _ => P2pResponse::Error {
             message: "未知请求".into(),
         },
@@ -396,4 +516,28 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
     let encoded = keypair.to_protobuf_encoding()?;
     tokio::fs::write(&path, encoded).await?;
     Ok(keypair)
+}
+
+async fn write_service_uuid(stream: &mut Stream, service_uuid: &str) -> Result<()> {
+    let bytes = service_uuid.as_bytes();
+    let len = bytes.len() as u16;
+    let mut header = [0u8; 2];
+    header[0] = (len >> 8) as u8;
+    header[1] = (len & 0xff) as u8;
+    stream.write_all(&header).await?;
+    stream.write_all(bytes).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+async fn read_service_uuid(stream: &mut Stream) -> Result<String> {
+    let mut header = [0u8; 2];
+    stream.read_exact(&mut header).await?;
+    let len = u16::from_be_bytes(header) as usize;
+    if len == 0 || len > 512 {
+        return Err(anyhow!("非法服务ID"));
+    }
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf).await?;
+    Ok(String::from_utf8_lossy(&buf).to_string())
 }

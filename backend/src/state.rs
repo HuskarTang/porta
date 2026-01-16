@@ -8,7 +8,7 @@ use crate::{
     models::{
         CommunityAddRequest, CommunityNode, CommunityService, CommunitySummary, DiscoveredService,
         KeyImportRequest, NodeConfigUpdate, NodeInfo, ProxyStatus, PublishRequest, PublishedService,
-        ServiceRegistryItem, SessionInfo, SubscribeRequest, SubscribedService,
+        SecureRoute, ServiceRegistryItem, SessionInfo, SubscribeRequest, SubscribedService,
     },
     p2p,
 };
@@ -79,6 +79,7 @@ pub trait Store: Send + Sync {
     async fn subscribed_services(&self) -> StoreResult<Vec<SubscribedService>>;
     async fn find_subscription(&self, id: &str) -> StoreResult<Option<SubscribedService>>;
     async fn published_services(&self) -> StoreResult<Vec<PublishedService>>;
+    async fn published_service_by_id(&self, id: &str) -> StoreResult<Option<PublishedService>>;
     async fn proxy_status(&self) -> StoreResult<ProxyStatus>;
     async fn sessions(&self) -> StoreResult<Vec<SessionInfo>>;
     async fn upsert_session(&self, session: SessionInfo) -> StoreResult<()>;
@@ -109,6 +110,12 @@ pub trait Store: Send + Sync {
     async fn resolve_service_registry(&self, uuid: &str) -> StoreResult<Option<ServiceRegistryItem>>;
     async fn record_subscription(&self, service_uuid: &str, subscriber_peer: &str)
         -> StoreResult<()>;
+
+    async fn secure_routes(&self) -> StoreResult<Vec<SecureRoute>>;
+    async fn add_secure_route(&self, route: SecureRoute) -> StoreResult<()>;
+    async fn remove_secure_route(&self, id: &str) -> StoreResult<bool>;
+    async fn update_secure_route_status(&self, id: &str, status: &str) -> StoreResult<bool>;
+    async fn find_secure_route(&self, id: &str) -> StoreResult<Option<SecureRoute>>;
 }
 
 pub struct SqliteStore {
@@ -351,6 +358,21 @@ impl SqliteStore {
                 subscriber_peer TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (service_uuid, subscriber_peer)
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS secure_routes (
+                id TEXT PRIMARY KEY,
+                subscription_id TEXT NOT NULL,
+                relay_peers TEXT NOT NULL,
+                local_port INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
             "#,
         )
@@ -850,6 +872,25 @@ impl Store for SqliteStore {
             .collect())
     }
 
+    async fn published_service_by_id(&self, id: &str) -> StoreResult<Option<PublishedService>> {
+        let row = sqlx::query(
+            "SELECT id, name, type, port, summary, subscriptions, status, publish_date FROM published_services WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| PublishedService {
+            id: row.get("id"),
+            name: row.get("name"),
+            r#type: row.get("type"),
+            port: row.get::<i64, _>("port") as u16,
+            summary: row.get("summary"),
+            subscriptions: row.get::<i64, _>("subscriptions") as u32,
+            status: row.get("status"),
+            publish_date: row.get("publish_date"),
+        }))
+    }
+
     async fn proxy_status(&self) -> StoreResult<ProxyStatus> {
         let row = sqlx::query("SELECT enabled, listen_port FROM proxy_status WHERE id = 1")
             .fetch_one(&self.pool)
@@ -1128,7 +1169,7 @@ impl Store for SqliteStore {
 
     async fn list_service_registry(&self) -> StoreResult<Vec<ServiceRegistryItem>> {
         let rows = sqlx::query(
-            "SELECT uuid, name, type, port, description, provider_peer, provider_addr, online FROM service_registry",
+            "SELECT uuid, name, type, port, description, provider_peer, provider_addr, online FROM service_registry WHERE announced = 1 AND online = 1",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -1183,5 +1224,82 @@ impl Store for SqliteStore {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    async fn secure_routes(&self) -> StoreResult<Vec<SecureRoute>> {
+        let rows = sqlx::query(
+            "SELECT id, subscription_id, relay_peers, local_port, status FROM secure_routes",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let relay_json: String = row.get("relay_peers");
+                let relay_peers: Vec<String> = serde_json::from_str(&relay_json).unwrap_or_default();
+                SecureRoute {
+                    id: row.get("id"),
+                    subscription_id: row.get("subscription_id"),
+                    relay_peers,
+                    local_port: row.get::<i64, _>("local_port") as u16,
+                    status: row.get("status"),
+                }
+            })
+            .collect())
+    }
+
+    async fn add_secure_route(&self, route: SecureRoute) -> StoreResult<()> {
+        let relay_json = serde_json::to_string(&route.relay_peers)?;
+        sqlx::query(
+            r#"
+            INSERT INTO secure_routes (id, subscription_id, relay_peers, local_port, status, created_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            "#,
+        )
+        .bind(route.id)
+        .bind(route.subscription_id)
+        .bind(relay_json)
+        .bind(route.local_port as i64)
+        .bind(route.status)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_secure_route(&self, id: &str) -> StoreResult<bool> {
+        let result = sqlx::query("DELETE FROM secure_routes WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn update_secure_route_status(&self, id: &str, status: &str) -> StoreResult<bool> {
+        let result = sqlx::query("UPDATE secure_routes SET status = ? WHERE id = ?")
+            .bind(status)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn find_secure_route(&self, id: &str) -> StoreResult<Option<SecureRoute>> {
+        let row = sqlx::query(
+            "SELECT id, subscription_id, relay_peers, local_port, status FROM secure_routes WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| {
+            let relay_json: String = row.get("relay_peers");
+            let relay_peers: Vec<String> = serde_json::from_str(&relay_json).unwrap_or_default();
+            SecureRoute {
+                id: row.get("id"),
+                subscription_id: row.get("subscription_id"),
+                relay_peers,
+                local_port: row.get::<i64, _>("local_port") as u16,
+                status: row.get("status"),
+            }
+        }))
     }
 }

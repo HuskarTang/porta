@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    models::{AccessRequest, PublishRequest, SubscribeRequest, UpdateSessionRequest},
+    models::{AccessRequest, PublishRequest, SecureConnectRequest, SubscribeRequest, UpdateSessionRequest},
     resp,
     state::AppState,
 };
@@ -21,6 +21,9 @@ pub fn router(state: AppState) -> Router {
         .route("/porta/service/unpublish", post(unpublish))
         .route("/porta/service/remove", post(remove_publish))
         .route("/porta/service/published", get(get_published_services))
+        .route("/porta/service/secure-connect", post(secure_connect))
+        .route("/porta/service/secure-disconnect", post(secure_disconnect))
+        .route("/porta/service/secure-routes", get(get_secure_routes))
         .with_state(state)
 }
 
@@ -154,5 +157,41 @@ async fn remove_publish(
         Ok(true) => resp::ok::<()> (None),
         Ok(false) => resp::err("未找到发布服务"),
         Err(err) => resp::err(&format!("删除失败: {}", err)),
+    }
+}
+
+async fn secure_connect(
+    State(state): State<AppState>,
+    Json(req): Json<SecureConnectRequest>,
+) -> impl axum::response::IntoResponse {
+    if req.subscription_id.is_empty() {
+        return resp::err("缺少 subscription_id");
+    }
+    if req.relay_peers.len() < 2 {
+        return resp::err("至少需要两个中继节点");
+    }
+    match state.app.secure_connect_service(req).await {
+        Ok(route) => resp::ok(Some(route)),
+        Err(err) => resp::err(&format!("建立安全连接失败: {}", err)),
+    }
+}
+
+async fn secure_disconnect(
+    State(state): State<AppState>,
+    Json(req): Json<UpdateSessionRequest>,
+) -> impl axum::response::IntoResponse {
+    if req.id.is_empty() {
+        return resp::err("缺少 id");
+    }
+    match state.app.disconnect_secure_route(&req.id).await {
+        Ok(()) => resp::ok::<()> (None),
+        Err(err) => resp::err(&format!("断开安全路由失败: {}", err)),
+    }
+}
+
+async fn get_secure_routes(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    match state.store.secure_routes().await {
+        Ok(list) => resp::ok(Some(list)),
+        Err(err) => resp::err(&format!("获取安全路由失败: {}", err)),
     }
 }

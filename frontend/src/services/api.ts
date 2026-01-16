@@ -4,6 +4,7 @@ import type {
   CommunitySummary,
   NodeInfo,
   PublishedService,
+  SecureRoute,
   ServiceDescriptor,
   SubscribedService
 } from "../types";
@@ -156,4 +157,26 @@ export async function toggleProxy(enabled: boolean) {
     method: "POST",
     body: JSON.stringify({ enabled })
   });
+}
+
+export async function secureConnect(payload: {
+  subscription_id: string;
+  relay_peers: string[];
+  local_port?: number;
+}) {
+  return await request("/porta/service/secure-connect", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function secureDisconnect(id: string) {
+  return await request("/porta/service/secure-disconnect", {
+    method: "POST",
+    body: JSON.stringify({ id })
+  });
+}
+
+export async function fetchSecureRoutes(): Promise<SecureRoute[]> {
+  return await request<SecureRoute[]>("/porta/service/secure-routes");
 }

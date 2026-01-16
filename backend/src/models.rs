@@ -202,3 +202,19 @@ pub struct ToggleRequest {
 pub struct ProxyToggle {
     pub enabled: bool,
 }
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SecureRoute {
+    pub id: String,
+    pub subscription_id: String,
+    pub relay_peers: Vec<String>,
+    pub local_port: u16,
+    pub status: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SecureConnectRequest {
+    pub subscription_id: String,
+    pub relay_peers: Vec<String>,
+    pub local_port: Option<u16>,
+}

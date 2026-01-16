@@ -6,7 +6,8 @@ use libp2p::{Multiaddr, PeerId};
 use crate::{
     models::{
         CommunityAddRequest, CommunitySummary, DiscoveredService, PublishedService, PublishRequest,
-        ServiceRegistryItem, SessionInfo, SubscribeRequest, SubscribedService,
+        SecureConnectRequest, SecureRoute, ServiceRegistryItem, SessionInfo, SubscribeRequest,
+        SubscribedService,
     },
     p2p::{P2pRequest, P2pResponse},
     state::Store,
@@ -160,22 +161,24 @@ impl AppService {
             return Err(anyhow!("未找到社区"));
         };
         let peer_id = self.ensure_community_peer(&community_id).await?;
+        let service_for_stream = service_uuid.clone();
         let response = self
             .p2p
             .request(
                 peer_id,
                 P2pRequest::ConnectService {
-                    service_uuid,
+                    service_uuid: service_uuid.clone(),
                     subscriber_peer: self.p2p.peer_id(),
                 },
             )
             .await?;
-        let (provider_addr, port) = match response {
+        let (provider_peer, provider_addr, port) = match response {
             P2pResponse::ConnectInfo {
+                provider_peer,
                 provider_addr,
                 port,
                 ..
-            } => (provider_addr, port),
+            } => (provider_peer, provider_addr, port),
             P2pResponse::Error { message } => return Err(anyhow!(message)),
             _ => return Err(anyhow!("连接失败")),
         };
@@ -195,7 +198,14 @@ impl AppService {
             state: "connected".into(),
         };
         self.store.upsert_session(session).await?;
-        tunnel::ensure_mapping(local_port, remote_addr).await?;
+        let peer_id: PeerId = provider_peer.parse()?;
+        tunnel::ensure_stream_mapping(
+            local_port,
+            peer_id,
+            service_for_stream,
+            self.p2p.clone(),
+        )
+        .await?;
         Ok(())
     }
 
@@ -314,6 +324,69 @@ impl AppService {
         }
         Ok(peer_id)
     }
+
+    pub async fn secure_connect_service(&self, req: SecureConnectRequest) -> Result<SecureRoute> {
+        if req.relay_peers.len() < 2 {
+            return Err(anyhow!("至少需要两个中继节点"));
+        }
+        let Some(subscription) = self.store.find_subscription(&req.subscription_id).await? else {
+            return Err(anyhow!("未找到订阅"));
+        };
+        let Some(service_uuid) = subscription.service_uuid.clone() else {
+            return Err(anyhow!("订阅缺少 service_uuid"));
+        };
+        let local_port = req.local_port.unwrap_or_else(|| {
+            parse_local_port(&subscription.local_mapping).unwrap_or(0)
+        });
+        if local_port == 0 {
+            return Err(anyhow!("无效本地端口"));
+        }
+        let first_relay = req.relay_peers.first().ok_or_else(|| anyhow!("中继链为空"))?;
+        let first_peer: PeerId = first_relay.parse()?;
+        let response = self
+            .p2p
+            .request(
+                first_peer,
+                P2pRequest::BuildRelayRoute {
+                    service_uuid: service_uuid.clone(),
+                    relay_chain: req.relay_peers.clone(),
+                    initiator_peer: self.p2p.peer_id(),
+                },
+            )
+            .await?;
+        match response {
+            P2pResponse::RelayRouteReady { .. } => {}
+            P2pResponse::ConnectInfo { .. } => {}
+            P2pResponse::Error { message } => return Err(anyhow!(message)),
+            _ => return Err(anyhow!("建立中继链路失败")),
+        }
+        let route_id = format!("secure-{}", uuid::Uuid::new_v4());
+        let route = SecureRoute {
+            id: route_id.clone(),
+            subscription_id: req.subscription_id.clone(),
+            relay_peers: req.relay_peers.clone(),
+            local_port,
+            status: "connected".into(),
+        };
+        self.store.add_secure_route(route.clone()).await?;
+        tunnel::ensure_secure_mapping(
+            local_port,
+            first_peer,
+            service_uuid,
+            req.relay_peers,
+            self.p2p.clone(),
+        )
+        .await?;
+        Ok(route)
+    }
+
+    pub async fn disconnect_secure_route(&self, id: &str) -> Result<()> {
+        let updated = self.store.update_secure_route_status(id, "断开").await?;
+        if !updated {
+            return Err(anyhow!("未找到安全路由"));
+        }
+        Ok(())
+    }
 }
 
 fn parse_local_port(mapping: &str) -> Result<u16> {
@@ -343,5 +416,16 @@ fn compose_remote_addr(provider_addr: &str, port: u16) -> String {
         provider_addr.to_string()
     } else {
         format!("{}:{}", provider_addr, port)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compose_remote_addr;
+
+    #[test]
+    fn should_compose_remote_addr() {
+        assert_eq!(compose_remote_addr("127.0.0.1", 8080), "127.0.0.1:8080");
+        assert_eq!(compose_remote_addr("127.0.0.1:9000", 8080), "127.0.0.1:9000");
     }
 }

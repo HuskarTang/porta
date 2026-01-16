@@ -36,6 +36,7 @@ pub enum P2pRequest {
     ConnectService { service_uuid: String, subscriber_peer: String },
     PublishService { service: ServiceAnnouncement },
     UnpublishService { service_uuid: String },
+    BuildRelayRoute { service_uuid: String, relay_chain: Vec<String>, initiator_peer: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +48,7 @@ pub enum P2pResponse {
         provider_addr: String,
         port: u16,
     },
+    RelayRouteReady { next_hop: Option<String> },
     Ack,
     Error { message: String },
 }

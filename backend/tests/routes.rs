@@ -1,6 +1,6 @@
 use axum::{body, body::Body, http::Request};
 use porta_backend::create_app;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tower::util::ServiceExt;
 
 fn setup_env() {
@@ -80,4 +80,47 @@ async fn community_add_requires_multiaddr() {
         .await
         .unwrap();
     assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn secure_connect_requires_min_two_relays() {
+    setup_env();
+    let app = create_app().await;
+    let payload = json!({
+        "subscription_id": "sub-1",
+        "relay_peers": ["peer-1"]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/porta/service/secure-connect")
+                .header("content-type", "application/json")
+                .body(Body::from(payload.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_client_error());
+}
+
+#[tokio::test]
+async fn secure_routes_should_return_list() {
+    setup_env();
+    let app = create_app().await;
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/porta/service/secure-routes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(response.status().is_success());
+    let bytes = body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(json.get("data").is_some());
 }
