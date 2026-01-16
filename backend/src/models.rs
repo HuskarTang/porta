@@ -24,6 +24,8 @@ pub struct CommunitySummary {
     pub joined: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub multiaddr: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub peer_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -48,6 +50,8 @@ pub struct DiscoveredService {
     pub subscribed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub community_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_addr: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -73,6 +77,18 @@ pub struct PublishedService {
     pub subscriptions: u32,
     pub status: String,
     pub publish_date: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ServiceRegistryItem {
+    pub uuid: String,
+    pub name: String,
+    pub r#type: String,
+    pub port: u16,
+    pub description: String,
+    pub provider_peer: String,
+    pub provider_addr: String,
+    pub online: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -152,6 +168,8 @@ pub struct CommunityAddRequest {
     pub description: String,
     #[serde(default)]
     pub multiaddr: Option<String>,
+    #[serde(default)]
+    pub peer_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

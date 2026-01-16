@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
 
 use crate::{
     models::{
-        DiscoveredService, PublishedService, PublishRequest, ServiceDescriptor, SessionInfo,
-        SubscribeRequest, SubscribedService,
+        CommunityAddRequest, CommunitySummary, DiscoveredService, PublishedService, PublishRequest,
+        ServiceRegistryItem, SessionInfo, SubscribeRequest, SubscribedService,
     },
     p2p::{P2pRequest, P2pResponse},
     state::Store,
@@ -24,12 +24,49 @@ impl AppService {
         Self { store, p2p }
     }
 
+    pub async fn add_community(&self, mut req: CommunityAddRequest) -> Result<CommunitySummary> {
+        if req.name.trim().is_empty() {
+            return Err(anyhow!("社区名称不能为空"));
+        }
+        if req.description.trim().is_empty() {
+            return Err(anyhow!("社区描述不能为空"));
+        }
+        if req.multiaddr.as_ref().is_none() {
+            return Err(anyhow!("缺少 multiaddr"));
+        }
+        let existing = self.store.communities().await?;
+        if existing.iter().any(|item| item.name == req.name) {
+            return Err(anyhow!("社区名称已存在"));
+        }
+        if let Some(id) = req.id.as_deref() {
+            if existing.iter().any(|item| item.id == id) {
+                return Err(anyhow!("社区 ID 已存在"));
+            }
+        }
+        if let Some(addr) = req.multiaddr.as_ref() {
+            let addr: Multiaddr = addr.parse()?;
+            let peer_id = extract_peer_id(&addr)
+                .ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"))?;
+            if self.store.community_exists_by_peer(&peer_id.to_string()).await? {
+                return Err(anyhow!("该社区已存在"));
+            }
+            req.peer_id = Some(peer_id.to_string());
+        }
+        let saved = self.store.add_community(req).await?;
+        Ok(saved)
+    }
+
+    pub async fn remove_community(&self, id: &str) -> Result<()> {
+        let removed = self.store.remove_community(id).await?;
+        if removed {
+            Ok(())
+        } else {
+            Err(anyhow!("未找到社区"))
+        }
+    }
+
     pub async fn connect_community(&self, id: &str) -> Result<()> {
-        let Some(addr) = self.store.community_multiaddr(id).await? else {
-            return Err(anyhow!("社区缺少 multiaddr"));
-        };
-        let addr: Multiaddr = addr.parse()?;
-        self.p2p.dial(addr).await?;
+        let _ = self.ensure_community_peer(id).await?;
         self.store.connect_community(id).await?;
         Ok(())
     }
@@ -41,23 +78,36 @@ impl AppService {
         let Some(community_id) = community_id else {
             return Ok(self.store.discovered_services(None).await?);
         };
-        let addr = self
-            .store
-            .community_multiaddr(&community_id)
-            .await?
-            .ok_or_else(|| anyhow!("社区缺少 multiaddr"))?;
-        let addr: Multiaddr = addr.parse()?;
-        let peer_id = self.p2p.dial(addr).await?;
+        let peer_id = self.ensure_community_peer(&community_id).await?;
         let response = self
             .p2p
-            .request(peer_id, P2pRequest::DiscoverServices { community_id: community_id.clone() })
+            .request(
+                peer_id,
+                P2pRequest::DiscoverServices {
+                    community_id: community_id.clone(),
+                },
+            )
             .await?;
         let services = match response {
             P2pResponse::ServiceList { services } => services,
+            P2pResponse::Error { message } => return Err(anyhow!(message)),
             _ => Vec::new(),
         };
+        let registry = services
+            .into_iter()
+            .map(|svc| ServiceRegistryItem {
+                uuid: svc.uuid,
+                name: svc.name,
+                r#type: svc.r#type,
+                port: svc.port,
+                description: svc.description,
+                provider_peer: svc.provider_peer,
+                provider_addr: svc.provider_addr,
+                online: true,
+            })
+            .collect::<Vec<_>>();
         self.store
-            .upsert_discovered_services(&community_id, services)
+            .upsert_discovered_services(&community_id, registry)
             .await?;
         let mut list = self
             .store
@@ -76,23 +126,20 @@ impl AppService {
     }
 
     pub async fn subscribe_service(&self, req: SubscribeRequest) -> Result<SubscribedService> {
+        if req.service_uuid.is_none() {
+            return Err(anyhow!("缺少 service_uuid"));
+        }
         let saved = self.store.subscribe_service(req.clone()).await?;
         if let Some(service_uuid) = req.service_uuid {
             if let Some(community_id) = self.find_community_for_service(&service_uuid).await? {
-                let addr = self
-                    .store
-                    .community_multiaddr(&community_id)
-                    .await?
-                    .ok_or_else(|| anyhow!("社区缺少 multiaddr"))?;
-                let addr: Multiaddr = addr.parse()?;
-                let peer_id = self.p2p.dial(addr).await?;
+                let peer_id = self.ensure_community_peer(&community_id).await?;
                 let _ = self
                     .p2p
                     .request(
                         peer_id,
                         P2pRequest::SubscribeService {
-                            community_id,
                             service_uuid,
+                            subscriber_peer: self.p2p.peer_id(),
                         },
                     )
                     .await?;
@@ -105,17 +152,50 @@ impl AppService {
         let Some(subscription) = self.store.find_subscription(id).await? else {
             return Err(anyhow!("未找到订阅"));
         };
-        self.store.update_subscription_status(id, "畅通").await?;
         let local_port = parse_local_port(&subscription.local_mapping)?;
+        let Some(service_uuid) = subscription.service_uuid.clone() else {
+            return Err(anyhow!("订阅缺少 service_uuid"));
+        };
+        let Some(community_id) = self.find_community_for_service(&service_uuid).await? else {
+            return Err(anyhow!("未找到社区"));
+        };
+        let peer_id = self.ensure_community_peer(&community_id).await?;
+        let response = self
+            .p2p
+            .request(
+                peer_id,
+                P2pRequest::ConnectService {
+                    service_uuid,
+                    subscriber_peer: self.p2p.peer_id(),
+                },
+            )
+            .await?;
+        let (provider_addr, port) = match response {
+            P2pResponse::ConnectInfo {
+                provider_addr,
+                port,
+                ..
+            } => (provider_addr, port),
+            P2pResponse::Error { message } => return Err(anyhow!(message)),
+            _ => return Err(anyhow!("连接失败")),
+        };
+        let remote_addr = compose_remote_addr(&provider_addr, port);
+        let updated = self
+            .store
+            .update_subscription_endpoint(id, &remote_addr, "畅通")
+            .await?;
+        if !updated {
+            return Err(anyhow!("更新订阅失败"));
+        }
         let session = SessionInfo {
             session_id: format!("sess-{}", id),
             service_id: id.to_string(),
             local_port,
-            remote_peer: subscription.remote_addr.clone(),
+            remote_peer: remote_addr.clone(),
             state: "connected".into(),
         };
         self.store.upsert_session(session).await?;
-        tunnel::ensure_mapping(local_port, subscription.remote_addr).await?;
+        tunnel::ensure_mapping(local_port, remote_addr).await?;
         Ok(())
     }
 
@@ -134,27 +214,32 @@ impl AppService {
 
     pub async fn publish_service(&self, req: PublishRequest) -> Result<PublishedService> {
         let published = self.store.publish_service(req.clone()).await?;
+        let node = self.store.node_info().await?;
+        let provider_addr = node
+            .external_addr
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "127.0.0.1".into());
         let communities = self.store.communities().await?;
         for community in communities.into_iter().filter(|c| c.joined) {
-            if let Some(addr) = community.multiaddr.clone() {
-                if let Ok(peer_id) = self.p2p.dial(addr.parse()?).await {
-                    let _ = self
-                        .p2p
-                        .request(
-                            peer_id,
-                            P2pRequest::PublishService {
-                                service: ServiceDescriptor {
-                                    uuid: published.id.clone(),
-                                    name: published.name.clone(),
-                                    r#type: published.r#type.clone(),
-                                    remote_port: published.port,
-                                    provider: self.p2p.peer_id(),
-                                    description: published.summary.clone(),
-                                },
+            if let Ok(peer_id) = self.ensure_community_peer(&community.id).await {
+                let _ = self
+                    .p2p
+                    .request(
+                        peer_id,
+                        P2pRequest::PublishService {
+                            service: crate::p2p::protocol::ServiceAnnouncement {
+                                uuid: published.id.clone(),
+                                name: published.name.clone(),
+                                r#type: published.r#type.clone(),
+                                port: published.port,
+                                provider_peer: self.p2p.peer_id(),
+                                provider_addr: provider_addr.clone(),
+                                description: published.summary.clone(),
                             },
-                        )
-                        .await;
-                }
+                        },
+                    )
+                    .await;
             }
         }
         Ok(published)
@@ -167,13 +252,11 @@ impl AppService {
         }
         let communities = self.store.communities().await?;
         for community in communities.into_iter().filter(|c| c.joined) {
-            if let Some(addr) = community.multiaddr.clone() {
-                if let Ok(peer_id) = self.p2p.dial(addr.parse()?).await {
-                    let _ = self
-                        .p2p
-                        .request(peer_id, P2pRequest::UnpublishService { service_uuid: id.into() })
-                        .await;
-                }
+            if let Ok(peer_id) = self.ensure_community_peer(&community.id).await {
+                let _ = self
+                    .p2p
+                    .request(peer_id, P2pRequest::UnpublishService { service_uuid: id.into() })
+                    .await;
             }
         }
         Ok(())
@@ -186,6 +269,51 @@ impl AppService {
             .find(|item| item.uuid == service_uuid)
             .and_then(|item| item.community_id))
     }
+
+    async fn build_hello(&self) -> Result<crate::p2p::protocol::NodeHello> {
+        let info = self.store.node_info().await?;
+        let role = current_role();
+        Ok(crate::p2p::protocol::NodeHello {
+            node_id: info.node_id,
+            role,
+        })
+    }
+
+    async fn ensure_community_peer(&self, community_id: &str) -> Result<PeerId> {
+        let Some(community) = self.store.community_by_id(community_id).await? else {
+            return Err(anyhow!("未找到社区"));
+        };
+        let Some(addr) = community.multiaddr.clone() else {
+            return Err(anyhow!("社区缺少 multiaddr"));
+        };
+        let addr: Multiaddr = addr.parse()?;
+        let expected_peer = extract_peer_id(&addr)
+            .ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"))?;
+        let peer_id = self.p2p.dial(addr).await?;
+        if peer_id != expected_peer {
+            return Err(anyhow!("peerId 校验失败"));
+        }
+        if self.store.peer_is_banned(&peer_id.to_string()).await? {
+            return Err(anyhow!("对端 peer 已被封禁"));
+        }
+        let response = self
+            .p2p
+            .request(peer_id, P2pRequest::Hello { hello: self.build_hello().await? })
+            .await?;
+        match response {
+            P2pResponse::HelloAck { hello } => {
+                if hello.role != "community" {
+                    return Err(anyhow!("对端角色不匹配"));
+                }
+                self.store
+                    .upsert_peer(&peer_id.to_string(), &hello.node_id, &hello.role, "online")
+                    .await?;
+            }
+            P2pResponse::Error { message } => return Err(anyhow!(message)),
+            _ => return Err(anyhow!("握手失败")),
+        }
+        Ok(peer_id)
+    }
 }
 
 fn parse_local_port(mapping: &str) -> Result<u16> {
@@ -194,4 +322,26 @@ fn parse_local_port(mapping: &str) -> Result<u16> {
         .last()
         .ok_or_else(|| anyhow!("无效本地映射"))?;
     Ok(port_str.parse::<u16>()?)
+}
+
+fn current_role() -> String {
+    std::env::var("PORTA_ROLE").unwrap_or_else(|_| "edge".into())
+}
+
+fn extract_peer_id(addr: &Multiaddr) -> Option<PeerId> {
+    addr.iter().find_map(|protocol| {
+        if let libp2p::multiaddr::Protocol::P2p(peer_id) = protocol {
+            Some(peer_id)
+        } else {
+            None
+        }
+    })
+}
+
+fn compose_remote_addr(provider_addr: &str, port: u16) -> String {
+    if provider_addr.contains(':') {
+        provider_addr.to_string()
+    } else {
+        format!("{}:{}", provider_addr, port)
+    }
 }

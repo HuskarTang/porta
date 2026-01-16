@@ -45,10 +45,7 @@ async fn add_community(
     State(state): State<AppState>,
     Json(req): Json<CommunityAddRequest>,
 ) -> impl axum::response::IntoResponse {
-    if req.name.is_empty() {
-        return resp::err("缺少社区名称");
-    }
-    match state.store.add_community(req).await {
+    match state.app.add_community(req).await {
         Ok(item) => resp::ok(Some(item)),
         Err(err) => resp::err(&format!("新增社区失败: {}", err)),
     }
@@ -58,9 +55,8 @@ async fn remove_community(
     State(state): State<AppState>,
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
-    match state.store.remove_community(&req.id).await {
-        Ok(true) => resp::ok::<()> (None),
-        Ok(false) => resp::err("未找到社区"),
+    match state.app.remove_community(&req.id).await {
+        Ok(()) => resp::ok::<()> (None),
         Err(err) => resp::err(&format!("移除社区失败: {}", err)),
     }
 }

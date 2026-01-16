@@ -8,7 +8,7 @@ use crate::{
     models::{
         CommunityAddRequest, CommunityNode, CommunityService, CommunitySummary, DiscoveredService,
         KeyImportRequest, NodeConfigUpdate, NodeInfo, ProxyStatus, PublishRequest, PublishedService,
-        ServiceDescriptor, SessionInfo, SubscribeRequest, SubscribedService,
+        ServiceRegistryItem, SessionInfo, SubscribeRequest, SubscribedService,
     },
     p2p,
 };
@@ -24,14 +24,29 @@ pub struct AppState {
 
 impl AppState {
     pub async fn new() -> StoreResult<Self> {
-        let db_path = std::env::var("PORTA_DB").unwrap_or_else(|_| "porta.db".into());
-        let store = SqliteStore::new(&db_path).await?;
+        let db_path = std::env::var("PORTA_DB").unwrap_or_else(|_| "data/porta.db".into());
+        let store = if db_path == ":memory:" {
+            SqliteStore::new_in_memory().await?
+        } else {
+            ensure_db_parent(&db_path)?;
+            SqliteStore::new(&db_path).await?
+        };
         let p2p = p2p::NodeHandle::spawn(store.clone()).await?;
         let peer_id = p2p.peer_id();
         store.ensure_node_identity(&peer_id).await?;
         let app = AppService::new(store.clone(), p2p.clone());
         Ok(Self { store, p2p, app })
     }
+}
+
+fn ensure_db_parent(path: &str) -> StoreResult<()> {
+    let db_path = std::path::Path::new(path);
+    if let Some(parent) = db_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -47,6 +62,8 @@ pub trait Store: Send + Sync {
     async fn remove_community(&self, id: &str) -> StoreResult<bool>;
     async fn connect_community(&self, id: &str) -> StoreResult<bool>;
     async fn community_multiaddr(&self, id: &str) -> StoreResult<Option<String>>;
+    async fn community_by_id(&self, id: &str) -> StoreResult<Option<CommunitySummary>>;
+    async fn community_exists_by_peer(&self, peer_id: &str) -> StoreResult<bool>;
 
     async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>>;
     async fn community_services(&self) -> StoreResult<Vec<CommunityService>>;
@@ -57,7 +74,7 @@ pub trait Store: Send + Sync {
     async fn upsert_discovered_services(
         &self,
         community_id: &str,
-        services: Vec<ServiceDescriptor>,
+        services: Vec<ServiceRegistryItem>,
     ) -> StoreResult<()>;
     async fn subscribed_services(&self) -> StoreResult<Vec<SubscribedService>>;
     async fn find_subscription(&self, id: &str) -> StoreResult<Option<SubscribedService>>;
@@ -65,6 +82,12 @@ pub trait Store: Send + Sync {
     async fn proxy_status(&self) -> StoreResult<ProxyStatus>;
     async fn sessions(&self) -> StoreResult<Vec<SessionInfo>>;
     async fn upsert_session(&self, session: SessionInfo) -> StoreResult<()>;
+    async fn update_subscription_endpoint(
+        &self,
+        id: &str,
+        remote_addr: &str,
+        status: &str,
+    ) -> StoreResult<bool>;
 
     async fn subscribe_service(&self, req: SubscribeRequest) -> StoreResult<SubscribedService>;
     async fn update_subscription_status(&self, id: &str, status: &str) -> StoreResult<bool>;
@@ -74,6 +97,18 @@ pub trait Store: Send + Sync {
     async fn set_service_announced(&self, id: &str, announced: bool) -> StoreResult<bool>;
     async fn set_node_ban(&self, id: &str, banned: bool) -> StoreResult<bool>;
     async fn set_proxy_enabled(&self, enabled: bool) -> StoreResult<()>;
+
+    async fn upsert_peer(&self, peer_id: &str, node_id: &str, role: &str, status: &str)
+        -> StoreResult<()>;
+    async fn peer_role(&self, peer_id: &str) -> StoreResult<Option<String>>;
+    async fn peer_is_banned(&self, peer_id: &str) -> StoreResult<bool>;
+
+    async fn upsert_service_registry(&self, service: ServiceRegistryItem) -> StoreResult<()>;
+    async fn remove_service_registry(&self, uuid: &str) -> StoreResult<bool>;
+    async fn list_service_registry(&self) -> StoreResult<Vec<ServiceRegistryItem>>;
+    async fn resolve_service_registry(&self, uuid: &str) -> StoreResult<Option<ServiceRegistryItem>>;
+    async fn record_subscription(&self, service_uuid: &str, subscriber_peer: &str)
+        -> StoreResult<()>;
 }
 
 pub struct SqliteStore {
@@ -90,13 +125,24 @@ impl SqliteStore {
         Ok(Arc::new(store))
     }
 
-    #[cfg(test)]
     pub async fn new_in_memory() -> StoreResult<Arc<Self>> {
         let pool = SqlitePool::connect("sqlite::memory:").await?;
         let store = Self { pool };
         store.init_schema().await?;
         store.seed_if_empty().await?;
         Ok(Arc::new(store))
+    }
+
+    async fn ensure_column(&self, table: &str, column: &str, ddl: &str) -> StoreResult<()> {
+        let pragma = format!("PRAGMA table_info({})", table);
+        let rows = sqlx::query(&pragma).fetch_all(&self.pool).await?;
+        let exists = rows
+            .iter()
+            .any(|row| row.get::<String, _>("name") == column);
+        if !exists {
+            sqlx::query(ddl).execute(&self.pool).await?;
+        }
+        Ok(())
     }
 
     async fn init_schema(&self) -> StoreResult<()> {
@@ -129,11 +175,19 @@ impl SqliteStore {
                 description TEXT NOT NULL,
                 peers INTEGER NOT NULL,
                 joined INTEGER NOT NULL,
-                multiaddr TEXT
+                multiaddr TEXT,
+                peer_id TEXT
             );
             "#,
         )
         .execute(&self.pool)
+        .await?;
+
+        self.ensure_column(
+            "communities",
+            "peer_id",
+            "ALTER TABLE communities ADD COLUMN peer_id TEXT",
+        )
         .await?;
 
         sqlx::query(
@@ -174,11 +228,19 @@ impl SqliteStore {
                 remote_port INTEGER NOT NULL,
                 provider TEXT NOT NULL,
                 description TEXT NOT NULL,
-                community_id TEXT NOT NULL
+                community_id TEXT NOT NULL,
+                provider_addr TEXT
             );
             "#,
         )
         .execute(&self.pool)
+        .await?;
+
+        self.ensure_column(
+            "discovered_services",
+            "provider_addr",
+            "ALTER TABLE discovered_services ADD COLUMN provider_addr TEXT",
+        )
         .await?;
 
         sqlx::query(
@@ -235,6 +297,60 @@ impl SqliteStore {
                 local_port INTEGER NOT NULL,
                 remote_peer TEXT NOT NULL,
                 state TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS peers (
+                peer_id TEXT PRIMARY KEY,
+                node_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                status TEXT NOT NULL,
+                banned INTEGER NOT NULL,
+                last_seen TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS service_registry (
+                uuid TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                provider_peer TEXT NOT NULL,
+                provider_addr TEXT NOT NULL,
+                online INTEGER NOT NULL,
+                announced INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        self.ensure_column(
+            "service_registry",
+            "announced",
+            "ALTER TABLE service_registry ADD COLUMN announced INTEGER NOT NULL DEFAULT 1",
+        )
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS service_subscriptions (
+                service_uuid TEXT NOT NULL,
+                subscriber_peer TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (service_uuid, subscriber_peer)
             );
             "#,
         )
@@ -476,7 +592,7 @@ impl Store for SqliteStore {
 
     async fn communities(&self) -> StoreResult<Vec<CommunitySummary>> {
         let rows = sqlx::query(
-            "SELECT id, name, description, peers, joined, multiaddr FROM communities",
+            "SELECT id, name, description, peers, joined, multiaddr, peer_id FROM communities",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -489,6 +605,7 @@ impl Store for SqliteStore {
                 peers: row.get::<i64, _>("peers") as u32,
                 joined: row.get::<i64, _>("joined") == 1,
                 multiaddr: row.get::<Option<String>, _>("multiaddr"),
+                peer_id: row.get::<Option<String>, _>("peer_id"),
             })
             .collect())
     }
@@ -496,12 +613,13 @@ impl Store for SqliteStore {
     async fn add_community(&self, req: CommunityAddRequest) -> StoreResult<CommunitySummary> {
         let id = req.id.unwrap_or_else(|| format!("community-{}", Uuid::new_v4()));
         sqlx::query(
-            "INSERT INTO communities (id, name, description, peers, joined, multiaddr) VALUES (?, ?, ?, 0, 0, ?)",
+            "INSERT INTO communities (id, name, description, peers, joined, multiaddr, peer_id) VALUES (?, ?, ?, 0, 0, ?, ?)",
         )
         .bind(&id)
         .bind(&req.name)
         .bind(&req.description)
         .bind(&req.multiaddr)
+        .bind(&req.peer_id)
         .execute(&self.pool)
         .await?;
         Ok(CommunitySummary {
@@ -511,6 +629,7 @@ impl Store for SqliteStore {
             peers: 0,
             joined: false,
             multiaddr: req.multiaddr,
+            peer_id: req.peer_id,
         })
     }
 
@@ -538,15 +657,44 @@ impl Store for SqliteStore {
         Ok(row.and_then(|r| r.get::<Option<String>, _>("multiaddr")))
     }
 
-    async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>> {
-        let rows = sqlx::query("SELECT id, uuid, status, banned FROM community_nodes")
-            .fetch_all(&self.pool)
+    async fn community_by_id(&self, id: &str) -> StoreResult<Option<CommunitySummary>> {
+        let row = sqlx::query(
+            "SELECT id, name, description, peers, joined, multiaddr, peer_id FROM communities WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| CommunitySummary {
+            id: row.get("id"),
+            name: row.get("name"),
+            description: row.get("description"),
+            peers: row.get::<i64, _>("peers") as u32,
+            joined: row.get::<i64, _>("joined") == 1,
+            multiaddr: row.get::<Option<String>, _>("multiaddr"),
+            peer_id: row.get::<Option<String>, _>("peer_id"),
+        }))
+    }
+
+    async fn community_exists_by_peer(&self, peer_id: &str) -> StoreResult<bool> {
+        let row = sqlx::query("SELECT COUNT(*) as count FROM communities WHERE peer_id = ?")
+            .bind(peer_id)
+            .fetch_one(&self.pool)
             .await?;
+        let count: i64 = row.get("count");
+        Ok(count > 0)
+    }
+
+    async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>> {
+        let rows = sqlx::query(
+            "SELECT peer_id, node_id, status, banned FROM peers WHERE role = 'edge'",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         Ok(rows
             .into_iter()
             .map(|row| CommunityNode {
-                id: row.get("id"),
-                uuid: row.get("uuid"),
+                id: row.get("peer_id"),
+                uuid: row.get("node_id"),
                 status: row.get("status"),
                 banned: row.get::<i64, _>("banned") == 1,
             })
@@ -555,17 +703,17 @@ impl Store for SqliteStore {
 
     async fn community_services(&self) -> StoreResult<Vec<CommunityService>> {
         let rows = sqlx::query(
-            "SELECT id, name, uuid, protocol, port, online, announced FROM community_services",
+            "SELECT uuid, name, type, port, online, announced FROM service_registry",
         )
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
             .map(|row| CommunityService {
-                id: row.get("id"),
+                id: row.get("uuid"),
                 name: row.get("name"),
                 uuid: row.get("uuid"),
-                protocol: row.get("protocol"),
+                protocol: row.get("type"),
                 port: row.get::<i64, _>("port") as u16,
                 online: row.get::<i64, _>("online") == 1,
                 announced: row.get::<i64, _>("announced") == 1,
@@ -579,14 +727,14 @@ impl Store for SqliteStore {
     ) -> StoreResult<Vec<DiscoveredService>> {
         let rows = if let Some(id) = community_id {
             sqlx::query(
-                "SELECT uuid, name, type, remote_port, provider, description, community_id FROM discovered_services WHERE community_id = ?",
+                "SELECT uuid, name, type, remote_port, provider, description, community_id, provider_addr FROM discovered_services WHERE community_id = ?",
             )
             .bind(id)
             .fetch_all(&self.pool)
             .await?
         } else {
             sqlx::query(
-                "SELECT uuid, name, type, remote_port, provider, description, community_id FROM discovered_services",
+                "SELECT uuid, name, type, remote_port, provider, description, community_id, provider_addr FROM discovered_services",
             )
             .fetch_all(&self.pool)
             .await?
@@ -602,6 +750,7 @@ impl Store for SqliteStore {
                 description: row.get("description"),
                 subscribed: None,
                 community_id: row.get("community_id"),
+                provider_addr: row.get("provider_addr"),
             })
             .collect())
     }
@@ -609,29 +758,31 @@ impl Store for SqliteStore {
     async fn upsert_discovered_services(
         &self,
         community_id: &str,
-        services: Vec<ServiceDescriptor>,
+        services: Vec<ServiceRegistryItem>,
     ) -> StoreResult<()> {
         for svc in services {
             sqlx::query(
                 r#"
-                INSERT INTO discovered_services (uuid, name, type, remote_port, provider, description, community_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO discovered_services (uuid, name, type, remote_port, provider, description, community_id, provider_addr)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(uuid) DO UPDATE SET
                     name = excluded.name,
                     type = excluded.type,
                     remote_port = excluded.remote_port,
                     provider = excluded.provider,
                     description = excluded.description,
-                    community_id = excluded.community_id
+                    community_id = excluded.community_id,
+                    provider_addr = excluded.provider_addr
                 "#,
             )
             .bind(svc.uuid)
             .bind(svc.name)
             .bind(svc.r#type)
-            .bind(svc.remote_port as i64)
-            .bind(svc.provider)
+            .bind(svc.port as i64)
+            .bind(svc.provider_peer)
             .bind(svc.description)
             .bind(community_id)
+            .bind(svc.provider_addr)
             .execute(&self.pool)
             .await?;
         }
@@ -795,6 +946,23 @@ impl Store for SqliteStore {
         Ok(result.rows_affected() > 0)
     }
 
+    async fn update_subscription_endpoint(
+        &self,
+        id: &str,
+        remote_addr: &str,
+        status: &str,
+    ) -> StoreResult<bool> {
+        let result = sqlx::query(
+            "UPDATE subscribed_services SET remote_addr = ?, status = ? WHERE id = ?",
+        )
+        .bind(remote_addr)
+        .bind(status)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     async fn publish_service(&self, req: PublishRequest) -> StoreResult<PublishedService> {
         let id = req.id.unwrap_or_else(|| format!("pub-{}", Uuid::new_v4()));
         sqlx::query(
@@ -851,7 +1019,7 @@ impl Store for SqliteStore {
     }
 
     async fn set_service_announced(&self, id: &str, announced: bool) -> StoreResult<bool> {
-        let result = sqlx::query("UPDATE community_services SET announced = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE service_registry SET announced = ? WHERE uuid = ?")
             .bind(if announced { 1 } else { 0 })
             .bind(id)
             .execute(&self.pool)
@@ -860,7 +1028,7 @@ impl Store for SqliteStore {
     }
 
     async fn set_node_ban(&self, id: &str, banned: bool) -> StoreResult<bool> {
-        let result = sqlx::query("UPDATE community_nodes SET banned = ? WHERE id = ?")
+        let result = sqlx::query("UPDATE peers SET banned = ? WHERE peer_id = ?")
             .bind(if banned { 1 } else { 0 })
             .bind(id)
             .execute(&self.pool)
@@ -873,6 +1041,147 @@ impl Store for SqliteStore {
             .bind(if enabled { 1 } else { 0 })
             .execute(&self.pool)
             .await?;
+        Ok(())
+    }
+
+    async fn upsert_peer(
+        &self,
+        peer_id: &str,
+        node_id: &str,
+        role: &str,
+        status: &str,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO peers (peer_id, node_id, role, status, banned, last_seen)
+            VALUES (?, ?, ?, ?, 0, datetime('now'))
+            ON CONFLICT(peer_id) DO UPDATE SET
+                node_id = excluded.node_id,
+                role = excluded.role,
+                status = excluded.status,
+                last_seen = datetime('now')
+            "#,
+        )
+        .bind(peer_id)
+        .bind(node_id)
+        .bind(role)
+        .bind(status)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn peer_role(&self, peer_id: &str) -> StoreResult<Option<String>> {
+        let row = sqlx::query("SELECT role FROM peers WHERE peer_id = ?")
+            .bind(peer_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row.map(|row| row.get("role")))
+    }
+
+    async fn peer_is_banned(&self, peer_id: &str) -> StoreResult<bool> {
+        let row = sqlx::query("SELECT banned FROM peers WHERE peer_id = ?")
+            .bind(peer_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(row
+            .map(|row| row.get::<i64, _>("banned") == 1)
+            .unwrap_or(false))
+    }
+
+    async fn upsert_service_registry(&self, service: ServiceRegistryItem) -> StoreResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO service_registry (uuid, name, type, port, description, provider_peer, provider_addr, online, announced, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'))
+            ON CONFLICT(uuid) DO UPDATE SET
+                name = excluded.name,
+                type = excluded.type,
+                port = excluded.port,
+                description = excluded.description,
+                provider_peer = excluded.provider_peer,
+                provider_addr = excluded.provider_addr,
+                online = excluded.online,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(service.uuid)
+        .bind(service.name)
+        .bind(service.r#type)
+        .bind(service.port as i64)
+        .bind(service.description)
+        .bind(service.provider_peer)
+        .bind(service.provider_addr)
+        .bind(if service.online { 1 } else { 0 })
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn remove_service_registry(&self, uuid: &str) -> StoreResult<bool> {
+        let result = sqlx::query("DELETE FROM service_registry WHERE uuid = ?")
+            .bind(uuid)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn list_service_registry(&self) -> StoreResult<Vec<ServiceRegistryItem>> {
+        let rows = sqlx::query(
+            "SELECT uuid, name, type, port, description, provider_peer, provider_addr, online FROM service_registry",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ServiceRegistryItem {
+                uuid: row.get("uuid"),
+                name: row.get("name"),
+                r#type: row.get("type"),
+                port: row.get::<i64, _>("port") as u16,
+                description: row.get("description"),
+                provider_peer: row.get("provider_peer"),
+                provider_addr: row.get("provider_addr"),
+                online: row.get::<i64, _>("online") == 1,
+            })
+            .collect())
+    }
+
+    async fn resolve_service_registry(&self, uuid: &str) -> StoreResult<Option<ServiceRegistryItem>> {
+        let row = sqlx::query(
+            "SELECT uuid, name, type, port, description, provider_peer, provider_addr, online FROM service_registry WHERE uuid = ?",
+        )
+        .bind(uuid)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| ServiceRegistryItem {
+            uuid: row.get("uuid"),
+            name: row.get("name"),
+            r#type: row.get("type"),
+            port: row.get::<i64, _>("port") as u16,
+            description: row.get("description"),
+            provider_peer: row.get("provider_peer"),
+            provider_addr: row.get("provider_addr"),
+            online: row.get::<i64, _>("online") == 1,
+        }))
+    }
+
+    async fn record_subscription(
+        &self,
+        service_uuid: &str,
+        subscriber_peer: &str,
+    ) -> StoreResult<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO service_subscriptions (service_uuid, subscriber_peer, created_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(service_uuid, subscriber_peer) DO NOTHING
+            "#,
+        )
+        .bind(service_uuid)
+        .bind(subscriber_peer)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

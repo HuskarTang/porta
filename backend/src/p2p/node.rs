@@ -1,26 +1,26 @@
 use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{anyhow, Result};
-use futures::StreamExt;
+use libp2p::futures::StreamExt;
 use libp2p::{
     identify, identity,
     multiaddr::Protocol,
     ping,
     request_response::{
         Behaviour as RequestResponse, Config as RequestResponseConfig, Event as RequestResponseEvent,
-        Message as RequestResponseMessage, ProtocolSupport, RequestId,
+        Message as RequestResponseMessage, OutboundRequestId, ProtocolSupport,
     },
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
-    tcp, yamux, Multiaddr, PeerId, SwarmBuilder, Transport,
+    tcp, yamux, Multiaddr, PeerId, Transport,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use crate::{
-    models::ServiceDescriptor,
+    models::ServiceRegistryItem,
     state::Store,
 };
 
-use super::protocol::{JsonCodec, P2pRequest, P2pResponse, PortaProtocol};
+use super::protocol::{JsonCodec, P2pRequest, P2pResponse, PortaProtocol, ServiceAnnouncement};
 
 #[derive(NetworkBehaviour)]
 struct PortaBehaviour {
@@ -59,22 +59,27 @@ impl NodeHandle {
             .boxed();
 
         let rr_config = RequestResponseConfig::default();
-        let protocols = std::iter::once((PortaProtocol, ProtocolSupport::Full));
-        let request_response = RequestResponse::new(JsonCodec::default(), protocols, rr_config);
+        let protocols = std::iter::once((PortaProtocol("/porta/req/1"), ProtocolSupport::Full));
+        let request_response = RequestResponse::new(protocols, rr_config);
 
         let behaviour = PortaBehaviour {
             request_response,
-            ping: ping::Behaviour::new(ping::Config::new().with_keep_alive(true)),
+            ping: ping::Behaviour::new(ping::Config::new()),
             identify: identify::Behaviour::new(
                 identify::Config::new("/porta/1.0".into(), keypair.public()),
             ),
         };
 
-        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, peer_id).build();
+        let mut swarm = Swarm::new(
+            transport,
+            behaviour,
+            peer_id,
+            libp2p::swarm::Config::with_tokio_executor(),
+        );
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
         let (sender, mut receiver) = mpsc::channel(32);
-        let mut pending: HashMap<RequestId, oneshot::Sender<Result<P2pResponse>>> =
+        let mut pending: HashMap<OutboundRequestId, oneshot::Sender<Result<P2pResponse>>> =
             HashMap::new();
 
         let store_clone = store.clone();
@@ -149,14 +154,14 @@ async fn handle_request_response_event(
     event: RequestResponseEvent<P2pRequest, P2pResponse>,
     swarm: &mut Swarm<PortaBehaviour>,
     store: &Arc<dyn Store>,
-    pending: &mut HashMap<RequestId, oneshot::Sender<Result<P2pResponse>>>,
+    pending: &mut HashMap<OutboundRequestId, oneshot::Sender<Result<P2pResponse>>>,
 ) {
     match event {
-        RequestResponseEvent::Message { message, .. } => match message {
+        RequestResponseEvent::Message { peer, message } => match message {
             RequestResponseMessage::Request {
                 request, channel, ..
             } => {
-                let response = handle_inbound_request(store, request).await;
+                let response = handle_inbound_request(store, &peer, request).await;
                 let _ = swarm
                     .behaviour_mut()
                     .request_response
@@ -183,19 +188,85 @@ async fn handle_request_response_event(
     }
 }
 
-async fn handle_inbound_request(store: &Arc<dyn Store>, request: P2pRequest) -> P2pResponse {
+async fn handle_inbound_request(
+    store: &Arc<dyn Store>,
+    peer: &PeerId,
+    request: P2pRequest,
+) -> P2pResponse {
     match request {
-        P2pRequest::DiscoverServices { .. } => match store.published_services().await {
+        P2pRequest::Hello { hello } => {
+            if hello.node_id.trim().is_empty() {
+                return P2pResponse::Error {
+                    message: "node_id 不能为空".into(),
+                };
+            }
+            if hello.role.trim().is_empty() {
+                return P2pResponse::Error {
+                    message: "role 不能为空".into(),
+                };
+            }
+            if let Err(err) = store
+                .upsert_peer(&peer.to_string(), &hello.node_id, &hello.role, "online")
+                .await
+            {
+                return P2pResponse::Error {
+                    message: format!("记录 peer 失败: {}", err),
+                };
+            }
+            let local = match store.node_info().await {
+                Ok(info) => super::protocol::NodeHello {
+                    node_id: info.node_id,
+                    role: std::env::var("PORTA_ROLE").unwrap_or_else(|_| "edge".into()),
+                },
+                Err(err) => {
+                    return P2pResponse::Error {
+                        message: format!("读取本地节点失败: {}", err),
+                    }
+                }
+            };
+            return P2pResponse::HelloAck { hello: local };
+        }
+        _ => {}
+    }
+
+    if let Ok(true) = store.peer_is_banned(&peer.to_string()).await {
+        return P2pResponse::Error {
+            message: "peer 已被封禁".into(),
+        };
+    }
+    let peer_role = match store.peer_role(&peer.to_string()).await {
+        Ok(Some(role)) => role,
+        Ok(None) => {
+            return P2pResponse::Error {
+                message: "peer 未握手".into(),
+            };
+        }
+        Err(err) => {
+            return P2pResponse::Error {
+                message: format!("读取 peer 失败: {}", err),
+            };
+        }
+    };
+
+    if peer_role.is_empty() {
+        return P2pResponse::Error {
+            message: "peer 未握手".into(),
+        };
+    }
+
+    match request {
+        P2pRequest::DiscoverServices { .. } => match store.list_service_registry().await {
             Ok(list) => {
                 let services = list
                     .into_iter()
-                    .map(|item| ServiceDescriptor {
-                        uuid: item.id,
+                    .map(|item| ServiceAnnouncement {
+                        uuid: item.uuid,
                         name: item.name,
                         r#type: item.r#type,
-                        remote_port: item.port,
-                        provider: "community-node".into(),
-                        description: item.summary,
+                        port: item.port,
+                        description: item.description,
+                        provider_peer: item.provider_peer,
+                        provider_addr: item.provider_addr,
                     })
                     .collect();
                 P2pResponse::ServiceList { services }
@@ -204,9 +275,102 @@ async fn handle_inbound_request(store: &Arc<dyn Store>, request: P2pRequest) -> 
                 message: format!("读取服务失败: {}", err),
             },
         },
-        P2pRequest::SubscribeService { .. } => P2pResponse::Ack,
-        P2pRequest::PublishService { .. } => P2pResponse::Ack,
-        P2pRequest::UnpublishService { .. } => P2pResponse::Ack,
+        P2pRequest::SubscribeService {
+            service_uuid,
+            subscriber_peer,
+        } => {
+            if peer_role != "edge" {
+                return P2pResponse::Error {
+                    message: "订阅角色不允许".into(),
+                };
+            }
+            if subscriber_peer != peer.to_string() {
+                return P2pResponse::Error {
+                    message: "订阅 peer 不匹配".into(),
+                };
+            }
+            if let Err(err) = store.record_subscription(&service_uuid, &subscriber_peer).await {
+                return P2pResponse::Error {
+                    message: format!("记录订阅失败: {}", err),
+                };
+            }
+            P2pResponse::Ack
+        }
+        P2pRequest::ConnectService {
+            service_uuid,
+            subscriber_peer,
+        } => {
+            if peer_role != "edge" {
+                return P2pResponse::Error {
+                    message: "连接角色不允许".into(),
+                };
+            }
+            if subscriber_peer != peer.to_string() {
+                return P2pResponse::Error {
+                    message: "连接 peer 不匹配".into(),
+                };
+            }
+            match store.resolve_service_registry(&service_uuid).await {
+                Ok(Some(service)) => P2pResponse::ConnectInfo {
+                    provider_peer: service.provider_peer,
+                    provider_addr: service.provider_addr,
+                    port: service.port,
+                },
+                Ok(None) => P2pResponse::Error {
+                    message: "未找到服务".into(),
+                },
+                Err(err) => P2pResponse::Error {
+                    message: format!("解析服务失败: {}", err),
+                },
+            }
+        }
+        P2pRequest::PublishService { service } => {
+            if peer_role != "edge" {
+                return P2pResponse::Error {
+                    message: "发布角色不允许".into(),
+                };
+            }
+            if service.provider_peer != peer.to_string() {
+                return P2pResponse::Error {
+                    message: "服务提供者 peer 不匹配".into(),
+                };
+            }
+            let registry = ServiceRegistryItem {
+                uuid: service.uuid,
+                name: service.name,
+                r#type: service.r#type,
+                port: service.port,
+                description: service.description,
+                provider_peer: service.provider_peer,
+                provider_addr: service.provider_addr,
+                online: true,
+            };
+            if let Err(err) = store.upsert_service_registry(registry).await {
+                return P2pResponse::Error {
+                    message: format!("服务注册失败: {}", err),
+                };
+            }
+            P2pResponse::Ack
+        }
+        P2pRequest::UnpublishService { service_uuid } => {
+            if peer_role != "edge" {
+                return P2pResponse::Error {
+                    message: "下架角色不允许".into(),
+                };
+            }
+            match store.remove_service_registry(&service_uuid).await {
+                Ok(true) => P2pResponse::Ack,
+                Ok(false) => P2pResponse::Error {
+                    message: "未找到服务".into(),
+                },
+                Err(err) => P2pResponse::Error {
+                    message: format!("下架失败: {}", err),
+                },
+            }
+        }
+        _ => P2pResponse::Error {
+            message: "未知请求".into(),
+        },
     }
 }
 
@@ -229,7 +393,7 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
         }
     }
     let keypair = identity::Keypair::generate_ed25519();
-    let encoded = keypair.to_protobuf_encoding();
+    let encoded = keypair.to_protobuf_encoding()?;
     tokio::fs::write(&path, encoded).await?;
     Ok(keypair)
 }
