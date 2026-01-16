@@ -53,6 +53,7 @@ onMounted(async () => {
 
 const onSubscribe = async (row: ServiceDescriptor) => {
   await subscribeService({
+    service_uuid: row.uuid,
     name: row.name,
     type: row.type,
     community: communityName.value,

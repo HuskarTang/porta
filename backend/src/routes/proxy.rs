@@ -11,7 +11,10 @@ pub fn router(state: AppState) -> Router {
 }
 
 async fn get_proxy_status(State(state): State<AppState>) -> impl axum::response::IntoResponse {
-    resp::ok(Some(state.store.proxy_status().await))
+    match state.store.proxy_status().await {
+        Ok(status) => resp::ok(Some(status)),
+        Err(err) => resp::err(&format!("获取代理状态失败: {}", err)),
+    }
 }
 
 async fn ok() -> impl axum::response::IntoResponse {
@@ -22,14 +25,18 @@ async fn enable_proxy(
     State(state): State<AppState>,
     Json(_): Json<ProxyToggle>,
 ) -> impl axum::response::IntoResponse {
-    state.store.set_proxy_enabled(true).await;
-    ok().await
+    match state.store.set_proxy_enabled(true).await {
+        Ok(()) => ok().await,
+        Err(err) => resp::err(&format!("启用代理失败: {}", err)),
+    }
 }
 
 async fn disable_proxy(
     State(state): State<AppState>,
     Json(_): Json<ProxyToggle>,
 ) -> impl axum::response::IntoResponse {
-    state.store.set_proxy_enabled(false).await;
-    ok().await
+    match state.store.set_proxy_enabled(false).await {
+        Ok(()) => ok().await,
+        Err(err) => resp::err(&format!("禁用代理失败: {}", err)),
+    }
 }

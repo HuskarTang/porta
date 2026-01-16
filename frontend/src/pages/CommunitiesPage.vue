@@ -32,7 +32,12 @@
         <el-table-column label="操作" width="160">
           <template #default="{ row }">
             <el-button size="small" @click="viewDetail(row)">查看详情</el-button>
-            <el-button size="small" type="primary" :disabled="row.joined">
+            <el-button
+              size="small"
+              type="primary"
+              :disabled="row.joined"
+              @click="joinCommunity(row)"
+            >
               加入
             </el-button>
           </template>
@@ -46,7 +51,8 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { Refresh } from "@element-plus/icons-vue";
-import { fetchCommunities } from "../services/api";
+import { ElMessage } from "element-plus";
+import { connectCommunity, fetchCommunities } from "../services/api";
 import type { CommunitySummary } from "../types";
 
 const router = useRouter();
@@ -70,6 +76,12 @@ onMounted(async () => {
 
 const load = async () => {
   communities.value = await fetchCommunities();
+};
+
+const joinCommunity = async (row: CommunitySummary) => {
+  await connectCommunity(row.id);
+  ElMessage.success(`已加入 ${row.name}`);
+  await load();
 };
 </script>
 

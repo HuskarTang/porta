@@ -35,8 +35,36 @@ export async function fetchNodeInfo(): Promise<NodeInfo> {
   return await request<NodeInfo>("/porta/node/info");
 }
 
+export async function updateNodeConfig(payload: Record<string, unknown>): Promise<NodeInfo> {
+  return await request<NodeInfo>("/porta/node/config", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function importNodeKey(payload: Record<string, unknown>): Promise<NodeInfo> {
+  return await request<NodeInfo>("/porta/node/key/import", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function generateNodeKey(): Promise<NodeInfo> {
+  return await request<NodeInfo>("/porta/node/key/generate", {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+}
+
 export async function fetchCommunities(): Promise<CommunitySummary[]> {
   return await request<CommunitySummary[]>("/porta/community/list");
+}
+
+export async function connectCommunity(id: string) {
+  return await request("/porta/community/connect", {
+    method: "POST",
+    body: JSON.stringify({ id })
+  });
 }
 
 export async function fetchCommunityServices(

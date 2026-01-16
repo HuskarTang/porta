@@ -5,9 +5,12 @@
 
     <el-card class="table-card" shadow="never">
       <template #header>
-        <div>
-          <div class="section-title">节点配置</div>
-          <div class="section-subtitle">节点标识和密钥管理</div>
+        <div class="card-header">
+          <div>
+            <div class="section-title">节点配置</div>
+            <div class="section-subtitle">节点标识和密钥管理</div>
+          </div>
+          <el-button type="primary" @click="saveConfig">保存配置</el-button>
         </div>
       </template>
       <el-form :model="nodeInfo" label-width="120px">
@@ -33,7 +36,8 @@
         </el-row>
         <el-form-item>
           <el-button>导出密钥</el-button>
-          <el-button>导入密钥</el-button>
+          <el-button @click="onImportKey">导入密钥</el-button>
+          <el-button type="primary" @click="onGenerateKey">生成密钥</el-button>
         </el-form-item>
       </el-form>
     </el-card>
@@ -109,7 +113,13 @@
 
 <script setup lang="ts">
 import { onMounted, reactive } from "vue";
-import { fetchNodeInfo } from "../services/api";
+import { ElMessage, ElMessageBox } from "element-plus";
+import {
+  fetchNodeInfo,
+  generateNodeKey,
+  importNodeKey,
+  updateNodeConfig
+} from "../services/api";
 
 interface ExternalAddress {
   host: string;
@@ -138,6 +148,19 @@ const newExternal = reactive<ExternalAddress>({
   port: ""
 });
 
+const syncExternalTable = (external: string[]) => {
+  externalTable.splice(0, externalTable.length);
+  external.forEach((item) => {
+    const [host, port] = item.split(":");
+    externalTable.push({ host, protocol: "TCP", port: port ?? "" });
+  });
+};
+
+const collectExternalAddr = () =>
+  externalTable
+    .filter((item) => item.host && item.port)
+    .map((item) => `${item.host}:${item.port}`);
+
 const addExternal = () => {
   if (!newExternal.host || !newExternal.port) return;
   externalTable.push({ ...newExternal });
@@ -149,14 +172,51 @@ const removeExternal = (index: number) => {
   externalTable.splice(index, 1);
 };
 
-onMounted(async () => {
+const refreshNodeInfo = async () => {
   const info = await fetchNodeInfo();
   Object.assign(nodeInfo, info);
-  externalTable.splice(0, externalTable.length);
-  info.external_addr.forEach((item) => {
-    const [host, port] = item.split(":");
-    externalTable.push({ host, protocol: "TCP", port: port ?? "" });
-  });
+  syncExternalTable(info.external_addr);
+};
+
+const saveConfig = async () => {
+  const payload = {
+    name: nodeInfo.name,
+    tcp_listen_enable: nodeInfo.tcp_listen_enable,
+    tcp_listen_port: nodeInfo.tcp_listen_port,
+    quci_listen_enable: nodeInfo.quci_listen_enable,
+    quci_listen_port: nodeInfo.quci_listen_port,
+    external_addr: collectExternalAddr(),
+    mdns_enable: nodeInfo.mdns_enable,
+    dht_enable: nodeInfo.dht_enable
+  };
+  const updated = await updateNodeConfig(payload);
+  Object.assign(nodeInfo, updated);
+  syncExternalTable(updated.external_addr);
+  ElMessage.success("配置已保存");
+};
+
+const onImportKey = async () => {
+  try {
+    const result = await ElMessageBox.prompt("输入密钥文件路径", "导入密钥", {
+      confirmButtonText: "导入",
+      cancelButtonText: "取消"
+    });
+    const updated = await importNodeKey({ key_path: result.value });
+    Object.assign(nodeInfo, updated);
+    ElMessage.success("密钥已导入");
+  } catch {
+    // 用户取消导入
+  }
+};
+
+const onGenerateKey = async () => {
+  const updated = await generateNodeKey();
+  Object.assign(nodeInfo, updated);
+  ElMessage.success("密钥已生成");
+};
+
+onMounted(async () => {
+  await refreshNodeInfo();
 });
 </script>
 
@@ -181,5 +241,11 @@ onMounted(async () => {
   height: 1px;
   background: #e5e7eb;
   margin: 16px 0;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 </style>

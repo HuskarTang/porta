@@ -22,6 +22,8 @@ pub struct CommunitySummary {
     pub description: String,
     pub peers: u32,
     pub joined: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub multiaddr: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -35,6 +37,20 @@ pub struct ServiceDescriptor {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DiscoveredService {
+    pub uuid: String,
+    pub name: String,
+    pub r#type: String,
+    pub remote_port: u16,
+    pub provider: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subscribed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub community_id: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SubscribedService {
     pub id: String,
     pub name: String,
@@ -43,6 +59,8 @@ pub struct SubscribedService {
     pub remote_addr: String,
     pub local_mapping: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_uuid: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -55,6 +73,15 @@ pub struct PublishedService {
     pub subscriptions: u32,
     pub status: String,
     pub publish_date: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub service_id: String,
+    pub local_port: u16,
+    pub remote_peer: String,
+    pub state: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -92,6 +119,8 @@ pub struct ApiResponse<T> {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SubscribeRequest {
     pub id: Option<String>,
+    #[serde(default)]
+    pub service_uuid: Option<String>,
     pub name: String,
     pub r#type: String,
     pub community: String,
@@ -100,9 +129,41 @@ pub struct SubscribeRequest {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NodeConfigUpdate {
+    pub name: Option<String>,
+    pub tcp_listen_enable: Option<bool>,
+    pub tcp_listen_port: Option<u16>,
+    pub quci_listen_enable: Option<bool>,
+    pub quci_listen_port: Option<u16>,
+    pub external_addr: Option<Vec<String>>,
+    pub mdns_enable: Option<bool>,
+    pub dht_enable: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct KeyImportRequest {
+    pub key_path: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CommunityAddRequest {
+    pub id: Option<String>,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub multiaddr: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AccessRequest {
+    pub id: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UpdateSessionRequest {
     pub id: String,
-    pub status: String,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -1,8 +1,9 @@
-use axum::{extract::State, routing::get, routing::post, Json, Router};
+use axum::{extract::Query, extract::State, routing::get, routing::post, Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    models::{PublishRequest, SubscribeRequest, UpdateSessionRequest},
+    models::{AccessRequest, PublishRequest, SubscribeRequest, UpdateSessionRequest},
     resp,
     state::AppState,
 };
@@ -23,12 +24,27 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn get_discovered_services(State(state): State<AppState>) -> impl axum::response::IntoResponse {
-    resp::ok(Some(state.store.discovered_services().await))
+#[derive(Deserialize)]
+struct DiscoverQuery {
+    #[serde(rename = "communityId")]
+    community_id: Option<String>,
+}
+
+async fn get_discovered_services(
+    State(state): State<AppState>,
+    Query(query): Query<DiscoverQuery>,
+) -> impl axum::response::IntoResponse {
+    match state.app.discover_services(query.community_id).await {
+        Ok(list) => resp::ok(Some(list)),
+        Err(err) => resp::err(&format!("获取服务发现失败: {}", err)),
+    }
 }
 
 async fn get_subscribed_services(State(state): State<AppState>) -> impl axum::response::IntoResponse {
-    resp::ok(Some(state.store.subscribed_services().await))
+    match state.store.subscribed_services().await {
+        Ok(list) => resp::ok(Some(list)),
+        Err(err) => resp::err(&format!("获取订阅列表失败: {}", err)),
+    }
 }
 
 async fn subscribe(
@@ -38,8 +54,10 @@ async fn subscribe(
     if req.name.is_empty() || req.r#type.is_empty() || req.community.is_empty() {
         return resp::err("缺少必填字段 name/type/community");
     }
-    let saved = state.store.subscribe_service(req).await;
-    resp::ok(Some(saved))
+    match state.app.subscribe_service(req).await {
+        Ok(saved) => resp::ok(Some(saved)),
+        Err(err) => resp::err(&format!("订阅失败: {}", err)),
+    }
 }
 
 async fn connect(
@@ -49,14 +67,9 @@ async fn connect(
     if req.id.is_empty() {
         return resp::err("缺少 id");
     }
-    let updated = state
-        .store
-        .update_subscription_status(&req.id, "畅通")
-        .await;
-    if updated {
-        resp::ok::<()> (None)
-    } else {
-        resp::err("未找到订阅")
+    match state.app.connect_service(&req.id).await {
+        Ok(()) => resp::ok::<()> (None),
+        Err(err) => resp::err(&format!("连接订阅失败: {}", err)),
     }
 }
 
@@ -67,30 +80,41 @@ async fn disconnect(
     if req.id.is_empty() {
         return resp::err("缺少 id");
     }
-    let updated = state
-        .store
-        .update_subscription_status(&req.id, "断开")
-        .await;
-    if updated {
-        resp::ok::<()> (None)
-    } else {
-        resp::err("未找到订阅")
+    match state.app.disconnect_service(&req.id).await {
+        Ok(()) => resp::ok::<()> (None),
+        Err(err) => resp::err(&format!("断开订阅失败: {}", err)),
     }
 }
 
-async fn get_sessions() -> impl axum::response::IntoResponse {
-    resp::ok(Some(json!([
-        { "session_id": "sess-001", "state": "connected" },
-        { "session_id": "sess-002", "state": "connecting" }
-    ])))
+async fn get_sessions(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+    match state.store.sessions().await {
+        Ok(list) => resp::ok(Some(list)),
+        Err(err) => resp::err(&format!("获取会话失败: {}", err)),
+    }
 }
 
-async fn get_access_url() -> impl axum::response::IntoResponse {
-    resp::ok(Some(json!({ "local_url": "http://localhost:8080" })))
+async fn get_access_url(
+    State(state): State<AppState>,
+    Json(req): Json<AccessRequest>,
+) -> impl axum::response::IntoResponse {
+    if req.id.is_empty() {
+        return resp::err("缺少 id");
+    }
+    match state.store.find_subscription(&req.id).await {
+        Ok(Some(subscription)) => {
+            let url = format!("http://{}", subscription.local_mapping);
+            resp::ok(Some(json!({ "local_url": url })))
+        }
+        Ok(None) => resp::err("未找到订阅"),
+        Err(err) => resp::err(&format!("获取访问地址失败: {}", err)),
+    }
 }
 
 async fn get_published_services(State(state): State<AppState>) -> impl axum::response::IntoResponse {
-    resp::ok(Some(state.store.published_services().await))
+    match state.store.published_services().await {
+        Ok(list) => resp::ok(Some(list)),
+        Err(err) => resp::err(&format!("获取发布列表失败: {}", err)),
+    }
 }
 
 async fn publish(
@@ -100,8 +124,10 @@ async fn publish(
     if req.name.is_empty() || req.r#type.is_empty() {
         return resp::err("缺少必填字段 name/type");
     }
-    let saved = state.store.publish_service(req).await;
-    resp::ok(Some(saved))
+    match state.app.publish_service(req).await {
+        Ok(saved) => resp::ok(Some(saved)),
+        Err(err) => resp::err(&format!("发布失败: {}", err)),
+    }
 }
 
 async fn unpublish(
@@ -111,11 +137,9 @@ async fn unpublish(
     if req.id.is_empty() {
         return resp::err("缺少 id");
     }
-    let updated = state.store.unpublish_service(&req.id).await;
-    if updated {
-        resp::ok::<()> (None)
-    } else {
-        resp::err("未找到发布服务")
+    match state.app.unpublish_service(&req.id).await {
+        Ok(()) => resp::ok::<()> (None),
+        Err(err) => resp::err(&format!("下架失败: {}", err)),
     }
 }
 
@@ -126,10 +150,9 @@ async fn remove_publish(
     if req.id.is_empty() {
         return resp::err("缺少 id");
     }
-    let removed = state.store.remove_published(&req.id).await;
-    if removed {
-        resp::ok::<()> (None)
-    } else {
-        resp::err("未找到发布服务")
+    match state.store.remove_published(&req.id).await {
+        Ok(true) => resp::ok::<()> (None),
+        Ok(false) => resp::err("未找到发布服务"),
+        Err(err) => resp::err(&format!("删除失败: {}", err)),
     }
 }
