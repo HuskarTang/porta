@@ -1,0 +1,16 @@
+{
+  "name": "porta-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Porta - P2P Network Application",
+  "scripts": {
+    "dev": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "build:backend": "cd backend && cargo build --release",
+    "tauri:dev": "cd src-tauri && cargo tauri dev",
+    "tauri:build": "npm run build:frontend && cd src-tauri && cargo tauri build",
+    "test:backend": "cd backend && cargo test",
+    "test:frontend": "cd frontend && npm run test",
+    "test": "npm run test:backend && npm run test:frontend"
+  }
+}
