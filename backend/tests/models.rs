@@ -1,6 +1,6 @@
 //! Tests for data models and serialization
 
-use serde_json::{json, Value};
+use serde_json::json;
 
 // Model types matching the backend models
 mod model_types {

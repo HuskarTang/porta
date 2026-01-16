@@ -11,6 +11,12 @@
     "tauri:build": "npm run build:frontend && cd src-tauri && cargo tauri build",
     "test:backend": "cd backend && cargo test",
     "test:frontend": "cd frontend && npm run test",
-    "test": "npm run test:backend && npm run test:frontend"
+    "test": "npm run test:backend && npm run test:frontend",
+    "test:system": "./scripts/run-all-tests.sh",
+    "test:system:api": "./scripts/run-all-tests.sh api",
+    "test:system:e2e": "./scripts/run-all-tests.sh e2e",
+    "test:setup": "./scripts/test-setup.sh start-single",
+    "test:setup:all": "./scripts/test-setup.sh start",
+    "test:teardown": "./scripts/test-setup.sh stop"
   }
 }
