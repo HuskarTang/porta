@@ -8,7 +8,7 @@
     "build:frontend": "cd frontend && npm run build",
     "build:lib": "cd backend && cargo build --release",
     "build:desktop": "npm run build:frontend && cd src-tauri && cargo tauri build",
-    "build:server": "npm run build:frontend && cd server && cargo build --release",
+    "build:server": "npm run build:frontend && cd server && PORTA_FORCE_REBUILD_FRONTEND=0 cargo build --release",
     "build:all": "npm run build:desktop && npm run build:server",
     "tauri:dev": "cd src-tauri && cargo tauri dev",
     "server:dev": "cd server && cargo run -- --config porta.toml.example",

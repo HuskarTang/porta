@@ -91,6 +91,7 @@ pub trait Store: Send + Sync {
     async fn community_multiaddr(&self, id: &str) -> StoreResult<Option<String>>;
     async fn community_by_id(&self, id: &str) -> StoreResult<Option<CommunitySummary>>;
     async fn community_exists_by_peer(&self, peer_id: &str) -> StoreResult<bool>;
+    async fn update_community_multiaddr(&self, id: &str, multiaddr: &str, peer_id: &str) -> StoreResult<bool>;
 
     async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>>;
     async fn community_services(&self) -> StoreResult<Vec<CommunityService>>;
@@ -453,9 +454,13 @@ impl SqliteStore {
             .fetch_one(&self.pool)
             .await?;
         let comm_count: i64 = comm_row.get("count");
+        // Seed mock communities ONLY if explicitly enabled via PORTA_SEED_COMMUNITIES=1
+        // This is for testing/demo purposes only. In production, communities should be added
+        // through the API using the add_community endpoint.
         let seed_communities =
             std::env::var("PORTA_SEED_COMMUNITIES").ok().as_deref() == Some("1");
         if seed_communities && comm_count == 0 {
+            tracing::info!("Seeding mock communities (PORTA_SEED_COMMUNITIES=1)");
             let entries = vec![
                 (
                     "dev-community",
@@ -495,6 +500,7 @@ impl SqliteStore {
                 .execute(&self.pool)
                 .await?;
             }
+            tracing::info!("Mock communities seeded successfully");
         }
 
         let proxy_row = sqlx::query("SELECT COUNT(*) as count FROM proxy_status")
@@ -786,6 +792,16 @@ impl Store for SqliteStore {
             .await?;
         let count: i64 = row.get("count");
         Ok(count > 0)
+    }
+
+    async fn update_community_multiaddr(&self, id: &str, multiaddr: &str, peer_id: &str) -> StoreResult<bool> {
+        let result = sqlx::query("UPDATE communities SET multiaddr = ?, peer_id = ? WHERE id = ?")
+            .bind(multiaddr)
+            .bind(peer_id)
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>> {

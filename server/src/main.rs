@@ -29,9 +29,9 @@ static WEB_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../frontend/dist");
 #[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "Porta P2P Network Service - headless server mode")]
 struct Args {
-    /// Path to configuration file
-    #[arg(short, long, default_value = "porta.toml")]
-    config: PathBuf,
+    /// Path to configuration file (default: user config directory/porta/config.toml)
+    #[arg(short, long)]
+    config: Option<PathBuf>,
 
     /// Override listen address
     #[arg(long)]
@@ -58,8 +58,15 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Determine config path: use provided path or default to user config directory
+    let config_path = if let Some(path) = args.config {
+        path
+    } else {
+        Config::default_config_path()?
+    };
+
     // Load configuration, create default if missing
-    let (mut config, created) = Config::load_or_create_default(&args.config)?;
+    let (mut config, created) = Config::load_or_create_default(&config_path)?;
 
     // Apply command-line overrides
     if let Some(listen) = args.listen {
@@ -79,7 +86,9 @@ async fn main() -> anyhow::Result<()> {
     config.ensure_db_file()?;
 
     if created {
-        println!("Default config created at {}", args.config.display());
+        println!("Default config created at {}", config_path.display());
+        println!("Please review and modify the configuration as needed.");
+        println!();
     }
 
     // Handle --print-config
@@ -98,13 +107,20 @@ async fn main() -> anyhow::Result<()> {
     init_logging(&config)?;
 
     tracing::info!("Starting Porta server v{}", env!("CARGO_PKG_VERSION"));
-    tracing::info!("Config file: {}", args.config.display());
+    tracing::info!("Config file: {}", config_path.display());
     tracing::info!("Node name: {}", config.node.name);
     tracing::info!("Node role: {}", config.node.role);
+    tracing::info!("Database: {}", config.database.path);
 
-    // Set environment variables for the backend
+    // Set environment variables for the backend to access configuration
+    // Note: Backend should ideally use config passed directly, but for now we use env vars
     std::env::set_var("PORTA_ROLE", &config.node.role);
     std::env::set_var("PORTA_DB", &config.database.path);
+    std::env::set_var("PORTA_P2P_TCP_PORT", &config.p2p.tcp_port.to_string());
+    std::env::set_var("PORTA_NODE_NAME", &config.node.name);
+    if let Some(ref key_path) = config.node.key_path {
+        std::env::set_var("PORTA_KEY_PATH", key_path);
+    }
 
     // Create the application (API + embedded web UI)
     let app = porta_backend::create_app()
@@ -170,20 +186,37 @@ fn init_logging(config: &Config) -> anyhow::Result<()> {
         "json" => {
             tracing_subscriber::registry()
                 .with(env_filter)
-                .with(tracing_subscriber::fmt::layer().json())
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .json()
+                        .with_file(true)
+                        .with_line_number(true)
+                        .with_target(true)
+                )
                 .init();
         }
         "pretty" => {
             tracing_subscriber::registry()
                 .with(env_filter)
-                .with(tracing_subscriber::fmt::layer().pretty())
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .pretty()
+                        .with_file(true)
+                        .with_line_number(true)
+                        .with_target(true)
+                )
                 .init();
         }
         _ => {
-            // Default: compact
+            // Default: compact with file and line number
             tracing_subscriber::registry()
                 .with(env_filter)
-                .with(tracing_subscriber::fmt::layer())
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_file(true)
+                        .with_line_number(true)
+                        .with_target(true)
+                )
                 .init();
         }
     }

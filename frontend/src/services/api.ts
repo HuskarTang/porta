@@ -19,17 +19,28 @@ interface ApiResp<T> {
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options
-  });
-  const json = (await response.json()) as ApiResp<T>;
-  if (!response.ok || json.code !== 0) {
-    const msg = json.message || `Request failed: ${response.status}`;
-    ElMessage.error(msg);
-    throw new Error(msg);
+  try {
+    const response = await fetch(`${baseUrl}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      ...options
+    });
+    const json = (await response.json()) as ApiResp<T>;
+    if (!response.ok || json.code !== 0) {
+      const msg = json.message || `Request failed: ${response.status}`;
+      ElMessage.error(msg);
+      throw new Error(msg);
+    }
+    return json.data as T;
+  } catch (error) {
+    // Handle network errors (e.g., server not running)
+    if (error instanceof TypeError && error.message.includes('fetch')) {
+      const msg = "无法连接到服务器，请确保服务已启动（端口 8090）";
+      ElMessage.error(msg);
+      throw new Error(msg);
+    }
+    // Re-throw other errors (already handled by ElMessage)
+    throw error;
   }
-  return json.data as T;
 }
 
 export async function fetchNodeInfo(): Promise<NodeInfo> {
@@ -59,6 +70,17 @@ export async function generateNodeKey(): Promise<NodeInfo> {
 
 export async function fetchCommunities(): Promise<CommunitySummary[]> {
   return await request<CommunitySummary[]>("/porta/community/list");
+}
+
+export async function addCommunity(payload: {
+  name: string;
+  description: string;
+  multiaddr: string;
+}) {
+  return await request<CommunitySummary>("/porta/community/add", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
 }
 
 export async function connectCommunity(id: string) {

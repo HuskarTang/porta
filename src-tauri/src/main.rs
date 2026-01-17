@@ -37,7 +37,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![get_backend_status])
         .setup(|app| {
-            // Use app data dir for the embedded backend database
+            // Use app data dir for the embedded backend database and config
             let data_dir = match app.path().app_data_dir() {
                 Ok(dir) => dir,
                 Err(err) => {
@@ -48,9 +48,16 @@ fn main() {
             if let Err(err) = std::fs::create_dir_all(&data_dir) {
                 tracing::error!("Failed to create app data dir {}: {}", data_dir.display(), err);
             }
+            
+            // Set database path and role for backend
             let db_path = data_dir.join("porta.db");
             std::env::set_var("PORTA_DB", db_path.to_string_lossy().to_string());
             std::env::set_var("PORTA_ROLE", "edge");
+            // Set default P2P TCP port for desktop app
+            std::env::set_var("PORTA_P2P_TCP_PORT", "9000");
+            
+            tracing::info!("Database path: {}", db_path.display());
+            tracing::info!("Node role: edge");
 
             // Start backend server asynchronously
             async_runtime::spawn(async move {

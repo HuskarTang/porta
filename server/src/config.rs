@@ -3,7 +3,7 @@
 //! This module handles loading and parsing TOML configuration files.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 /// Root configuration structure
@@ -69,6 +69,11 @@ pub struct NodeConfig {
     /// Node role: "edge" or "community"
     #[serde(default = "default_role")]
     pub role: String,
+
+    /// Path to the node's key file (for P2P identity)
+    /// If not specified, will be generated based on database path
+    #[serde(default)]
+    pub key_path: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -76,6 +81,7 @@ impl Default for NodeConfig {
         Self {
             name: default_node_name(),
             role: default_role(),
+            key_path: None,
         }
     }
 }
@@ -105,7 +111,13 @@ impl Default for DatabaseConfig {
 }
 
 fn default_db_path() -> String {
-    "porta.db".to_string()
+    // Use user data directory for database by default
+    if let Some(data_dir) = dirs::data_local_dir() {
+        let porta_data = data_dir.join("porta");
+        porta_data.join("porta.db").to_string_lossy().to_string()
+    } else {
+        "porta.db".to_string()
+    }
 }
 
 /// P2P network configuration
@@ -198,14 +210,41 @@ impl Config {
         Ok(config)
     }
 
+    /// Get the default config directory path
+    pub fn default_config_dir() -> Result<PathBuf> {
+        let config_dir = if cfg!(target_os = "macos") {
+            dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get config directory"))?
+                .join("porta")
+        } else if cfg!(target_os = "linux") {
+            dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get config directory"))?
+                .join("porta")
+        } else if cfg!(target_os = "windows") {
+            dirs::config_dir()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get config directory"))?
+                .join("Porta")
+        } else {
+            PathBuf::from(".porta")
+        };
+        Ok(config_dir)
+    }
+
+    /// Get the default config file path
+    pub fn default_config_path() -> Result<PathBuf> {
+        Ok(Self::default_config_dir()?.join("config.toml"))
+    }
+
     /// Load configuration from a TOML file, or create default config if missing.
     /// Returns the config and a flag indicating whether a default file was created.
     pub fn load_or_create_default<P: AsRef<Path>>(path: P) -> Result<(Self, bool)> {
         let path = path.as_ref();
 
         if path.exists() {
+            tracing::info!("Loading config from: {}", path.display());
             Ok((Self::load(path)?, false))
         } else {
+            tracing::info!("Creating default config at: {}", path.display());
             let config = Self::default();
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
@@ -217,6 +256,7 @@ impl Config {
                 .context("Failed to render default config")?;
             std::fs::write(path, content)
                 .with_context(|| format!("Failed to write default config: {}", path.display()))?;
+            tracing::info!("Default config created successfully");
             Ok((config, true))
         }
     }

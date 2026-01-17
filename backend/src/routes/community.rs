@@ -65,9 +65,17 @@ async fn connect_community(
     State(state): State<AppState>,
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
+    tracing::info!("[API] 收到连接社区请求: id={}", req.id);
     match state.app.connect_community(&req.id).await {
-        Ok(()) => resp::ok::<()> (None),
-        Err(err) => resp::err(&format!("连接社区失败: {}", err)),
+        Ok(()) => {
+            tracing::info!("[API] 社区连接成功: id={}", req.id);
+            resp::ok::<()> (None)
+        }
+        Err(err) => {
+            let error_msg = format!("连接社区失败: {}", err);
+            tracing::error!("[API] 社区连接失败: id={}, error={}", req.id, error_msg);
+            resp::err(&error_msg)
+        }
     }
 }
 

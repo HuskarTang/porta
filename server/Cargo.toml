@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Porta P2P Server - headless service mode"
 authors = ["Porta Team"]
+build = "build.rs"
 
 [[bin]]
 name = "porta-server"
@@ -32,3 +33,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Error handling
 anyhow = "1.0"
+
+# System directories
+dirs = "5.0"

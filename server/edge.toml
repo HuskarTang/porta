@@ -1,0 +1,31 @@
+# Porta Edge Node Configuration
+# This configuration is for an edge node that accesses and uses services
+
+[server]
+listen_addr = "0.0.0.0"
+port = 8090
+
+[node]
+name = "Porta Edge Node"
+role = "edge"
+key_path = "porta-edge.key"
+
+[database]
+# Database will be created in user data directory
+# macOS: ~/Library/Application Support/porta/porta-edge.db
+# Linux: ~/.local/share/porta/porta-edge.db
+# Windows: %LOCALAPPDATA%\porta\porta-edge.db
+path = "porta-edge.db"
+
+[p2p]
+# Edge node uses default ports
+tcp_port = 9000
+quic_port = 9001
+mdns_enable = true
+dht_enable = true
+# Add your public IP address here if you want external access
+# external_addrs = ["/ip4/YOUR_PUBLIC_IP/tcp/9000", "/ip4/YOUR_PUBLIC_IP/udp/9001/quic"]
+
+[logging]
+level = "info"
+format = "compact"
