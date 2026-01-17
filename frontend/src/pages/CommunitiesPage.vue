@@ -67,7 +67,10 @@ const filteredCommunities = computed(() => {
 });
 
 const viewDetail = (row: CommunitySummary) => {
-  router.push(`/communities/${row.id}`);
+  router.push({
+    path: `/communities/${row.id}`,
+    query: { name: row.name, desc: row.description }
+  });
 };
 
 onMounted(async () => {

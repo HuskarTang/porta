@@ -2,7 +2,7 @@
   <div>
     <el-button link @click="goBack">← 返回社区列表</el-button>
     <h2 class="page-title">{{ communityName }}</h2>
-    <p class="page-subtitle">机器学习模型和数据分析服务</p>
+    <p class="page-subtitle">{{ communityDescription }}</p>
 
     <el-card class="table-card" shadow="never">
       <div class="section-title">可订阅服务</div>
@@ -34,12 +34,13 @@
 import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
-import { fetchCommunityServices, subscribeService } from "../services/api";
+import { fetchCommunities, fetchCommunityServices, subscribeService } from "../services/api";
 import type { ServiceDescriptor } from "../types";
 
 const route = useRoute();
 const router = useRouter();
-const communityName = ref("数据科学团队");
+const communityName = ref("社区详情");
+const communityDescription = ref("暂无描述");
 const services = ref<(ServiceDescriptor & { subscribed?: boolean })[]>([]);
 
 const goBack = () => {
@@ -48,6 +49,12 @@ const goBack = () => {
 
 onMounted(async () => {
   const communityId = route.params.id as string;
+  const communities = await fetchCommunities();
+  const target = communities.find((c) => c.id === communityId);
+  communityName.value =
+    (route.query.name as string) || target?.name || communityId;
+  communityDescription.value =
+    (route.query.desc as string) || target?.description || "暂无描述";
   services.value = await fetchCommunityServices(communityId);
 });
 

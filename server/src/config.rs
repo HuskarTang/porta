@@ -198,21 +198,55 @@ impl Config {
         Ok(config)
     }
 
-    /// Load configuration from a TOML file, or return defaults if file doesn't exist
-    pub fn load_or_default<P: AsRef<Path>>(path: P) -> Result<Self> {
+    /// Load configuration from a TOML file, or create default config if missing.
+    /// Returns the config and a flag indicating whether a default file was created.
+    pub fn load_or_create_default<P: AsRef<Path>>(path: P) -> Result<(Self, bool)> {
         let path = path.as_ref();
-        
+
         if path.exists() {
-            Self::load(path)
+            Ok((Self::load(path)?, false))
         } else {
-            tracing::info!("Config file not found, using defaults: {}", path.display());
-            Ok(Self::default())
+            let config = Self::default();
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+                }
+            }
+            let content = toml::to_string_pretty(&config)
+                .context("Failed to render default config")?;
+            std::fs::write(path, content)
+                .with_context(|| format!("Failed to write default config: {}", path.display()))?;
+            Ok((config, true))
         }
     }
 
     /// Get the full server bind address
     pub fn bind_addr(&self) -> String {
         format!("{}:{}", self.server.listen_addr, self.server.port)
+    }
+
+    /// Ensure the database file exists (creates parent directories as needed)
+    pub fn ensure_db_file(&self) -> Result<()> {
+        let db_path = self.database.path.as_str();
+        if db_path == ":memory:" {
+            return Ok(());
+        }
+        let path = std::path::Path::new(db_path);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("Failed to create db directory: {}", parent.display()))?;
+            }
+        }
+        if !path.exists() {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(path)
+                .with_context(|| format!("Failed to create db file: {}", path.display()))?;
+        }
+        Ok(())
     }
 
     /// Validate the configuration

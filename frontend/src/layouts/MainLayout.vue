@@ -87,11 +87,27 @@ const openTabs = reactive<TabInfo[]>([
   { title: "设置", path: "/settings", closable: false }
 ]);
 
+const resolveTabTitle = () => {
+  const metaTitle = (route.meta.title as string) || "";
+  if (metaTitle) return metaTitle;
+  const matchedTitle = route.matched
+    .map((r) => r.meta.title as string)
+    .find((t) => t && t.length > 0);
+  if (matchedTitle) return matchedTitle;
+  if (route.path.startsWith("/communities/")) {
+    return (route.query.name as string) || "社区详情";
+  }
+  if (route.path.startsWith("/service-access")) {
+    return (route.query.name as string) || "服务访问";
+  }
+  return "未命名";
+};
+
 const addTab = (path: string, title?: string) => {
   const exists = openTabs.find((t) => t.path === path);
   if (exists) return;
   openTabs.push({
-    title: title || path,
+    title: title || resolveTabTitle(),
     path,
     closable: path !== "/settings"
   });
@@ -119,7 +135,7 @@ watch(
   () => route.fullPath,
   (path) => {
     activeTab.value = path;
-    const title = (route.meta.title as string) || "未命名";
+    const title = resolveTabTitle();
     addTab(path, title);
   },
   { immediate: true }

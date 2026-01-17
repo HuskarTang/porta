@@ -20,6 +20,10 @@ porta-backend = { path = "../backend" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[patch.crates-io]
+tauri = { path = "vendor/tauri" }
+tao = { path = "vendor/tao" }
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

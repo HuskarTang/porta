@@ -453,7 +453,9 @@ impl SqliteStore {
             .fetch_one(&self.pool)
             .await?;
         let comm_count: i64 = comm_row.get("count");
-        if comm_count == 0 {
+        let seed_communities =
+            std::env::var("PORTA_SEED_COMMUNITIES").ok().as_deref() == Some("1");
+        if seed_communities && comm_count == 0 {
             let entries = vec![
                 (
                     "dev-community",

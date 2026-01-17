@@ -1,9 +1,27 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tokio::sync::oneshot;
+use std::io::Write;
+use tauri::{async_runtime, Manager};
+
+fn init_panic_log() {
+    let log_path = std::env::temp_dir().join("porta-tauri-panic.log");
+    let _ = std::fs::remove_file(&log_path);
+    std::panic::set_hook(Box::new(move |info| {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            let _ = writeln!(file, "panic: {}", info);
+            let bt = std::backtrace::Backtrace::capture();
+            let _ = writeln!(file, "{:?}", bt);
+        }
+    }));
+}
 
 fn main() {
+    init_panic_log();
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -14,49 +32,47 @@ fn main() {
 
     tracing::info!("Starting Porta application...");
 
-    // Create a tokio runtime for the backend
-    let runtime = tokio::runtime::Runtime::new().expect("Failed to create Tokio runtime");
-
-    // Channel to signal backend readiness
-    let (tx, rx) = oneshot::channel::<()>();
-
-    // Spawn the backend server in a separate thread
-    let backend_handle = std::thread::spawn(move || {
-        runtime.block_on(async {
-            tracing::info!("Starting Porta backend server...");
-            
-            let app = porta_backend::create_app().await;
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:8090")
-                .await
-                .expect("Failed to bind to port 8090");
-            
-            tracing::info!("Backend server listening on http://127.0.0.1:8090");
-            
-            // Signal that the backend is ready
-            let _ = tx.send(());
-            
-            axum::serve(listener, app).await.expect("Server failed");
-        });
-    });
-
-    // Wait for backend to be ready (with timeout)
-    std::thread::spawn(move || {
-        let _ = rx.blocking_recv();
-        tracing::info!("Backend server is ready");
-    });
-
-    // Give the backend a moment to start
-    std::thread::sleep(std::time::Duration::from_millis(500));
-
     // Run the Tauri application
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![get_backend_status])
+        .setup(|app| {
+            // Use app data dir for the embedded backend database
+            let data_dir = match app.path().app_data_dir() {
+                Ok(dir) => dir,
+                Err(err) => {
+                    tracing::error!("Failed to resolve app data dir: {}", err);
+                    std::env::current_dir().unwrap_or_else(|_| ".".into())
+                }
+            };
+            if let Err(err) = std::fs::create_dir_all(&data_dir) {
+                tracing::error!("Failed to create app data dir {}: {}", data_dir.display(), err);
+            }
+            let db_path = data_dir.join("porta.db");
+            std::env::set_var("PORTA_DB", db_path.to_string_lossy().to_string());
+            std::env::set_var("PORTA_ROLE", "edge");
+
+            // Start backend server asynchronously
+            async_runtime::spawn(async move {
+                tracing::info!("Starting Porta backend server...");
+                let app = porta_backend::create_app().await;
+                match tokio::net::TcpListener::bind("127.0.0.1:8090").await {
+                    Ok(listener) => {
+                        tracing::info!("Backend server listening on http://127.0.0.1:8090");
+                        if let Err(err) = axum::serve(listener, app).await {
+                            tracing::error!("Backend server failed: {}", err);
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!("Failed to bind backend port 8090: {}", err);
+                    }
+                }
+            });
+
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("Failed to run Tauri application");
-
-    // Wait for backend thread to finish (this will block until app closes)
-    let _ = backend_handle.join();
 }
 
 /// Command to check if the backend is running

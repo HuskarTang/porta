@@ -57,5 +57,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libsqlite3-dev
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
+      - name: Build frontend for server embed
+        run: cd frontend && npm run build
+
       - name: Build server
         run: cd server && cargo build --release

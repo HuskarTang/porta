@@ -6,12 +6,21 @@
 
 mod config;
 
+use axum::{
+    body::Body,
+    http::{header, StatusCode, Uri},
+    response::Response,
+    routing::get,
+};
 use clap::Parser;
 use config::Config;
+use include_dir::{include_dir, Dir};
 use std::path::PathBuf;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+static WEB_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/../frontend/dist");
 
 /// Porta P2P Network Server
 #[derive(Parser, Debug)]
@@ -49,8 +58,8 @@ struct Args {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    // Load configuration
-    let mut config = Config::load_or_default(&args.config)?;
+    // Load configuration, create default if missing
+    let (mut config, created) = Config::load_or_create_default(&args.config)?;
 
     // Apply command-line overrides
     if let Some(listen) = args.listen {
@@ -65,6 +74,13 @@ async fn main() -> anyhow::Result<()> {
 
     // Validate configuration
     config.validate()?;
+
+    // Ensure database file exists (prevents sqlite open errors)
+    config.ensure_db_file()?;
+
+    if created {
+        println!("Default config created at {}", args.config.display());
+    }
 
     // Handle --print-config
     if args.print_config {
@@ -90,8 +106,10 @@ async fn main() -> anyhow::Result<()> {
     std::env::set_var("PORTA_ROLE", &config.node.role);
     std::env::set_var("PORTA_DB", &config.database.path);
 
-    // Create the application
-    let app = porta_backend::create_app().await;
+    // Create the application (API + embedded web UI)
+    let app = porta_backend::create_app()
+        .await
+        .fallback(get(serve_embedded));
 
     // Bind to address
     let bind_addr = config.bind_addr();
@@ -110,6 +128,34 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Server shutdown complete");
     Ok(())
+}
+
+async fn serve_embedded(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    if let Some(file) = WEB_DIR.get_file(path) {
+        return file_response(file.contents(), path);
+    }
+
+    // SPA fallback to index.html if asset not found
+    if let Some(index) = WEB_DIR.get_file("index.html") {
+        return file_response(index.contents(), "index.html");
+    }
+
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::from("Not Found"))
+        .unwrap()
+}
+
+fn file_response(contents: &[u8], path: &str) -> Response {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, mime.as_ref())
+        .body(Body::from(contents.to_vec()))
+        .unwrap()
 }
 
 /// Initialize the logging subsystem based on configuration

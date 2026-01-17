@@ -1,0 +1,21 @@
+[server]
+listen_addr = "0.0.0.0"
+port = 8091
+
+[node]
+name = "Community"
+role = "community"
+
+[database]
+path = "porta2.db"
+
+[p2p]
+tcp_port = 9010
+quic_port = 9011
+mdns_enable = true
+dht_enable = true
+external_addrs = []
+
+[logging]
+level = "info"
+format = "compact"
