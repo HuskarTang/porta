@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Root configuration structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Server configuration
     #[serde(default)]
@@ -284,6 +284,7 @@ impl Config {
         if !path.exists() {
             std::fs::OpenOptions::new()
                 .create(true)
+                .truncate(true)
                 .write(true)
                 .open(path)
                 .with_context(|| format!("Failed to create db file: {}", path.display()))?;
@@ -322,18 +323,6 @@ impl Config {
         }
 
         Ok(())
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: ServerConfig::default(),
-            node: NodeConfig::default(),
-            database: DatabaseConfig::default(),
-            p2p: P2pConfig::default(),
-            logging: LoggingConfig::default(),
-        }
     }
 }
 

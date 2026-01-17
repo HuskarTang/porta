@@ -90,7 +90,7 @@ fn is_dir_newer(dir: &Path, file: &Path) -> bool {
 
 fn build_frontend() {
     let output = Command::new("npm")
-        .args(&["run", "build"])
+        .args(["run", "build"])
         .current_dir("../frontend")
         .output();
 

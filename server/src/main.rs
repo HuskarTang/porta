@@ -116,7 +116,7 @@ async fn main() -> anyhow::Result<()> {
     // Note: Backend should ideally use config passed directly, but for now we use env vars
     std::env::set_var("PORTA_ROLE", &config.node.role);
     std::env::set_var("PORTA_DB", &config.database.path);
-    std::env::set_var("PORTA_P2P_TCP_PORT", &config.p2p.tcp_port.to_string());
+    std::env::set_var("PORTA_P2P_TCP_PORT", config.p2p.tcp_port.to_string());
     std::env::set_var("PORTA_NODE_NAME", &config.node.name);
     if let Some(ref key_path) = config.node.key_path {
         std::env::set_var("PORTA_KEY_PATH", key_path);

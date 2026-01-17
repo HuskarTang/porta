@@ -146,7 +146,7 @@ impl NodeHandle {
                                 } else {
                                     tracing::info!("[P2P] 拨号请求已发送，等待连接建立: {}", peer_id);
                                     // Store the responder to notify when connection is established
-                                    pending_dials.entry(peer_id).or_insert_with(Vec::new).push(respond_to);
+                                    pending_dials.entry(peer_id).or_default().push(respond_to);
                                 }
                             }
                             Command::Request { peer, request, respond_to } => {
@@ -511,40 +511,37 @@ async fn handle_inbound_request(
         peer,
         std::mem::discriminant(&request)
     );
-    match request {
-        P2pRequest::Hello { hello } => {
-            if hello.node_id.trim().is_empty() {
-                return P2pResponse::Error {
-                    message: "node_id 不能为空".into(),
-                };
-            }
-            if hello.role.trim().is_empty() {
-                return P2pResponse::Error {
-                    message: "role 不能为空".into(),
-                };
-            }
-            if let Err(err) = store
-                .upsert_peer(&peer.to_string(), &hello.node_id, &hello.role, "online")
-                .await
-            {
-                return P2pResponse::Error {
-                    message: format!("记录 peer 失败: {}", err),
-                };
-            }
-            let local = match store.node_info().await {
-                Ok(info) => super::protocol::NodeHello {
-                    node_id: info.node_id,
-                    role: std::env::var("PORTA_ROLE").unwrap_or_else(|_| "edge".into()),
-                },
-                Err(err) => {
-                    return P2pResponse::Error {
-                        message: format!("读取本地节点失败: {}", err),
-                    }
-                }
+    if let P2pRequest::Hello { hello } = request {
+        if hello.node_id.trim().is_empty() {
+            return P2pResponse::Error {
+                message: "node_id 不能为空".into(),
             };
-            return P2pResponse::HelloAck { hello: local };
         }
-        _ => {}
+        if hello.role.trim().is_empty() {
+            return P2pResponse::Error {
+                message: "role 不能为空".into(),
+            };
+        }
+        if let Err(err) = store
+            .upsert_peer(&peer.to_string(), &hello.node_id, &hello.role, "online")
+            .await
+        {
+            return P2pResponse::Error {
+                message: format!("记录 peer 失败: {}", err),
+            };
+        }
+        let local = match store.node_info().await {
+            Ok(info) => super::protocol::NodeHello {
+                node_id: info.node_id,
+                role: std::env::var("PORTA_ROLE").unwrap_or_else(|_| "edge".into()),
+            },
+            Err(err) => {
+                return P2pResponse::Error {
+                    message: format!("读取本地节点失败: {}", err),
+                }
+            }
+        };
+        return P2pResponse::HelloAck { hello: local };
     }
 
     if let Ok(true) = store.peer_is_banned(&peer.to_string()).await {

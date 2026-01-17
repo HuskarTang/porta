@@ -106,7 +106,7 @@ impl AppService {
         community_id: Option<String>,
     ) -> Result<Vec<DiscoveredService>> {
         let Some(community_id) = community_id else {
-            return Ok(self.store.discovered_services(None).await?);
+            return self.store.discovered_services(None).await;
         };
         tracing::info!("发现服务: 社区 {}", community_id);
         let peer_id = self.ensure_community_peer(&community_id).await?;
@@ -453,9 +453,7 @@ impl AppService {
                                         })
                                         .collect::<Multiaddr>();
                                     // Add correct /p2p/peer_id
-                                    new_addr.push(libp2p::multiaddr::Protocol::P2p(
-                                        actual_peer_id.into(),
-                                    ));
+                                    new_addr.push(libp2p::multiaddr::Protocol::P2p(actual_peer_id));
 
                                     let new_addr_str = new_addr.to_string();
                                     if self
@@ -751,7 +749,7 @@ impl AppService {
 fn parse_local_port(mapping: &str) -> Result<u16> {
     let port_str = mapping
         .split(':')
-        .last()
+        .next_back()
         .ok_or_else(|| anyhow!("无效本地映射"))?;
     Ok(port_str.parse::<u16>()?)
 }
