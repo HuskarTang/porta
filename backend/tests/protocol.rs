@@ -26,28 +26,54 @@ mod protocol_types {
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     #[serde(tag = "type")]
     pub enum P2pRequest {
-        Hello { hello: NodeHello },
-        DiscoverServices { community_id: String },
-        SubscribeService { service_uuid: String, subscriber_peer: String },
-        ConnectService { service_uuid: String, subscriber_peer: String },
-        PublishService { service: ServiceAnnouncement },
-        UnpublishService { service_uuid: String },
-        BuildRelayRoute { service_uuid: String, relay_chain: Vec<String>, initiator_peer: String },
+        Hello {
+            hello: NodeHello,
+        },
+        DiscoverServices {
+            community_id: String,
+        },
+        SubscribeService {
+            service_uuid: String,
+            subscriber_peer: String,
+        },
+        ConnectService {
+            service_uuid: String,
+            subscriber_peer: String,
+        },
+        PublishService {
+            service: ServiceAnnouncement,
+        },
+        UnpublishService {
+            service_uuid: String,
+        },
+        BuildRelayRoute {
+            service_uuid: String,
+            relay_chain: Vec<String>,
+            initiator_peer: String,
+        },
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
     #[serde(tag = "type")]
     pub enum P2pResponse {
-        HelloAck { hello: NodeHello },
-        ServiceList { services: Vec<ServiceAnnouncement> },
+        HelloAck {
+            hello: NodeHello,
+        },
+        ServiceList {
+            services: Vec<ServiceAnnouncement>,
+        },
         ConnectInfo {
             provider_peer: String,
             provider_addr: String,
             port: u16,
         },
-        RelayRouteReady { next_hop: Option<String> },
+        RelayRouteReady {
+            next_hop: Option<String>,
+        },
         Ack,
-        Error { message: String },
+        Error {
+            message: String,
+        },
     }
 }
 
@@ -252,17 +278,15 @@ fn hello_ack_response_serializes() {
 #[test]
 fn service_list_response_serializes() {
     let resp = P2pResponse::ServiceList {
-        services: vec![
-            ServiceAnnouncement {
-                uuid: "svc-list-1".to_string(),
-                name: "Service 1".to_string(),
-                r#type: "HTTP".to_string(),
-                port: 8080,
-                description: "First service".to_string(),
-                provider_peer: "peer-1".to_string(),
-                provider_addr: "10.0.0.1".to_string(),
-            },
-        ],
+        services: vec![ServiceAnnouncement {
+            uuid: "svc-list-1".to_string(),
+            name: "Service 1".to_string(),
+            r#type: "HTTP".to_string(),
+            port: 8080,
+            description: "First service".to_string(),
+            provider_peer: "peer-1".to_string(),
+            provider_addr: "10.0.0.1".to_string(),
+        }],
     };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(json.contains("ServiceList"));
@@ -294,9 +318,7 @@ fn relay_route_ready_response_serializes() {
 
 #[test]
 fn relay_route_ready_with_none_serializes() {
-    let resp = P2pResponse::RelayRouteReady {
-        next_hop: None,
-    };
+    let resp = P2pResponse::RelayRouteReady { next_hop: None };
     let json = serde_json::to_string(&resp).unwrap();
     assert!(json.contains("RelayRouteReady"));
 }
@@ -324,9 +346,7 @@ fn error_response_serializes() {
 
 #[test]
 fn empty_service_list_serializes() {
-    let resp = P2pResponse::ServiceList {
-        services: vec![],
-    };
+    let resp = P2pResponse::ServiceList { services: vec![] };
     let json = serde_json::to_string(&resp).unwrap();
     let decoded: P2pResponse = serde_json::from_str(&json).unwrap();
     match decoded {

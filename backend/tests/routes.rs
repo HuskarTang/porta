@@ -16,7 +16,12 @@ async fn node_info_should_return_name() {
     setup_env();
     let app = create_app().await;
     let response = app
-        .oneshot(Request::builder().uri("/porta/node/info").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/porta/node/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -32,7 +37,12 @@ async fn node_info_should_contain_all_fields() {
     setup_env();
     let app = create_app().await;
     let response = app
-        .oneshot(Request::builder().uri("/porta/node/info").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/porta/node/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -159,7 +169,12 @@ async fn communities_list_returns_array() {
     setup_env();
     let app = create_app().await;
     let response = app
-        .oneshot(Request::builder().uri("/porta/community/list").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/porta/community/list")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -175,7 +190,12 @@ async fn communities_contain_required_fields() {
     setup_env();
     let app = create_app().await;
     let response = app
-        .oneshot(Request::builder().uri("/porta/community/list").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/porta/community/list")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -846,7 +866,12 @@ async fn api_response_has_correct_format() {
     setup_env();
     let app = create_app().await;
     let response = app
-        .oneshot(Request::builder().uri("/porta/node/info").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/porta/node/info")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     let bytes = body::to_bytes(response.into_body(), 1024 * 1024)

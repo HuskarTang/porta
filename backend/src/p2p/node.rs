@@ -1,27 +1,28 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use anyhow::{anyhow, Result};
+use libp2p::futures::io::{AsyncReadExt, AsyncWriteExt};
 use libp2p::futures::StreamExt;
 use libp2p::{
     identify, identity,
     multiaddr::Protocol,
     ping,
     request_response::{
-        Behaviour as RequestResponse, Config as RequestResponseConfig, Event as RequestResponseEvent,
-        Message as RequestResponseMessage, OutboundRequestId, ProtocolSupport,
+        Behaviour as RequestResponse, Config as RequestResponseConfig,
+        Event as RequestResponseEvent, Message as RequestResponseMessage, OutboundRequestId,
+        ProtocolSupport,
     },
-    swarm::{NetworkBehaviour, Swarm, SwarmEvent, Stream, StreamProtocol},
+    swarm::{NetworkBehaviour, Stream, StreamProtocol, Swarm, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Transport,
 };
 use libp2p_stream::{Behaviour as StreamBehaviour, Control as StreamControl};
 use tokio::sync::{mpsc, oneshot};
-use libp2p::futures::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
-use crate::{
-    models::ServiceRegistryItem,
-    state::Store,
-};
+use crate::{models::ServiceRegistryItem, state::Store};
 
 use super::protocol::{JsonCodec, P2pRequest, P2pResponse, PortaProtocol, ServiceAnnouncement};
 use super::STREAM_PROTOCOL;
@@ -75,14 +76,14 @@ impl NodeHandle {
         let stream = StreamBehaviour::new();
         let mut stream_control = stream.new_control();
         // Use shorter ping interval to keep connections alive
-        let ping_config = ping::Config::new()
-            .with_interval(std::time::Duration::from_secs(10));
+        let ping_config = ping::Config::new().with_interval(std::time::Duration::from_secs(10));
         let behaviour = PortaBehaviour {
             request_response,
             ping: ping::Behaviour::new(ping_config),
-            identify: identify::Behaviour::new(
-                identify::Config::new("/porta/1.0".into(), keypair.public()),
-            ),
+            identify: identify::Behaviour::new(identify::Config::new(
+                "/porta/1.0".into(),
+                keypair.public(),
+            )),
             stream,
         };
 
@@ -90,12 +91,7 @@ impl NodeHandle {
         // Ping protocol will keep connections alive, but we need time for initial requests
         let swarm_config = libp2p::swarm::Config::with_tokio_executor()
             .with_idle_connection_timeout(std::time::Duration::from_secs(120));
-        let mut swarm = Swarm::new(
-            transport,
-            behaviour,
-            peer_id,
-            swarm_config,
-        );
+        let mut swarm = Swarm::new(transport, behaviour, peer_id, swarm_config);
         // Try to use configured port from environment, or auto-assign
         let tcp_port = std::env::var("PORTA_P2P_TCP_PORT")
             .ok()
@@ -127,7 +123,13 @@ impl NodeHandle {
         let stream_control_for_relay = stream_control.clone();
         tokio::spawn(async move {
             while let Some((peer, stream)) = incoming.next().await {
-                handle_incoming_stream(peer, stream, &store_for_streams, stream_control_for_relay.clone()).await;
+                handle_incoming_stream(
+                    peer,
+                    stream,
+                    &store_for_streams,
+                    stream_control_for_relay.clone(),
+                )
+                .await;
             }
         });
         tokio::spawn(async move {
@@ -169,7 +171,7 @@ impl NodeHandle {
                             tracing::info!("[P2P] Identify 协议完成: peer={}, listen_addrs={:?}", peer_id, info.listen_addrs);
                             // Now that Identify protocol is complete, connection is fully ready
                             // Notify pending dials
-                            tracing::debug!("[P2P] 检查 pending_dials，当前 key: peer={}, pending_dials keys: {:?}", 
+                            tracing::debug!("[P2P] 检查 pending_dials，当前 key: peer={}, pending_dials keys: {:?}",
                                 peer_id, pending_dials.keys().collect::<Vec<_>>());
                             if let Some(responders) = pending_dials.remove(&peer_id) {
                                 tracing::info!("[P2P] 通知等待的 dial: peer={}, 等待者数量={}", peer_id, responders.len());
@@ -177,7 +179,7 @@ impl NodeHandle {
                                     let _ = responder.send(Ok(()));
                                 }
                             } else {
-                                tracing::warn!("[P2P] Identify 完成但未找到 pending_dials 条目: peer={}, 当前 pending_dials keys: {:?}", 
+                                tracing::warn!("[P2P] Identify 完成但未找到 pending_dials 条目: peer={}, 当前 pending_dials keys: {:?}",
                                     peer_id, pending_dials.keys().collect::<Vec<_>>());
                             }
                         }
@@ -212,7 +214,7 @@ impl NodeHandle {
                             } else {
                                 // For errors without peer_id, check if there are any pending dials
                                 // This shouldn't happen in normal flow, but log for debugging
-                                tracing::warn!("[P2P] 出站连接错误但没有 peer_id，当前 pending_dials keys: {:?}", 
+                                tracing::warn!("[P2P] 出站连接错误但没有 peer_id，当前 pending_dials keys: {:?}",
                                     pending_dials.keys().collect::<Vec<_>>());
                             }
                         }
@@ -237,21 +239,29 @@ impl NodeHandle {
     }
 
     pub async fn dial(&self, addr: Multiaddr) -> Result<PeerId> {
-        let peer_id = peer_id_from_addr(&addr)
-            .ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"))?;
-        
+        let peer_id =
+            peer_id_from_addr(&addr).ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"))?;
+
         let (tx, rx) = oneshot::channel();
         self.sender
-            .send(Command::Dial { addr, peer_id, respond_to: tx })
+            .send(Command::Dial {
+                addr,
+                peer_id,
+                respond_to: tx,
+            })
             .await
             .map_err(|_| anyhow!("p2p 通道已关闭"))?;
-        
+
         // Wait for connection to be established (with timeout)
         // Connection establishment includes: TCP connection, TLS/Noise handshake
         // We wait for Identify protocol completion, which means the connection is fully ready
         // Use a longer timeout to account for slow networks or busy nodes
         let timeout_duration = std::time::Duration::from_secs(30);
-        tracing::debug!("[P2P] 等待连接建立: peer={}, 超时={:?}", peer_id, timeout_duration);
+        tracing::debug!(
+            "[P2P] 等待连接建立: peer={}, 超时={:?}",
+            peer_id,
+            timeout_duration
+        );
         match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(Ok(()))) => {
                 tracing::info!("[P2P] 连接建立成功: peer={}", peer_id);
@@ -262,14 +272,26 @@ impl NodeHandle {
                 Err(e)
             }
             Ok(Err(e)) => {
-                tracing::error!("[P2P] oneshot channel 错误: peer={}, error={:?}", peer_id, e);
+                tracing::error!(
+                    "[P2P] oneshot channel 错误: peer={}, error={:?}",
+                    peer_id,
+                    e
+                );
                 Err(anyhow!("p2p 连接建立失败：channel 错误"))
             }
             Err(_) => {
                 // Timeout occurred - this means Identify event was never received
-                tracing::error!("[P2P] 连接建立超时: peer={}, 超时时间={:?}", peer_id, timeout_duration);
-                tracing::error!("[P2P] 可能原因: 1) Identify 事件未触发 2) peer_id 不匹配 3) 目标节点未响应");
-                Err(anyhow!("p2p 连接建立超时（30秒）。可能原因：Identify 协议未完成或 peer_id 不匹配"))
+                tracing::error!(
+                    "[P2P] 连接建立超时: peer={}, 超时时间={:?}",
+                    peer_id,
+                    timeout_duration
+                );
+                tracing::error!(
+                    "[P2P] 可能原因: 1) Identify 事件未触发 2) peer_id 不匹配 3) 目标节点未响应"
+                );
+                Err(anyhow!(
+                    "p2p 连接建立超时（30秒）。可能原因：Identify 协议未完成或 peer_id 不匹配"
+                ))
             }
         }
     }
@@ -334,7 +356,9 @@ async fn handle_request_response_event(
                 }
             }
         },
-        RequestResponseEvent::OutboundFailure { request_id, error, .. } => {
+        RequestResponseEvent::OutboundFailure {
+            request_id, error, ..
+        } => {
             if let Some(ch) = pending.remove(&request_id) {
                 let error_msg: String = match &error {
                     libp2p::request_response::OutboundFailure::DialFailure => {
@@ -354,7 +378,12 @@ async fn handle_request_response_event(
                         format!("IO 错误: {}", err)
                     }
                 };
-                tracing::error!("[P2P] 出站请求失败: request_id={:?}, error={:?}, msg={}", request_id, error, error_msg);
+                tracing::error!(
+                    "[P2P] 出站请求失败: request_id={:?}, error={:?}, msg={}",
+                    request_id,
+                    error,
+                    error_msg
+                );
                 let _ = ch.send(Err(anyhow!("请求失败: {}", error_msg)));
             }
         }
@@ -371,7 +400,11 @@ async fn handle_incoming_stream(
     store: &Arc<dyn Store>,
     mut stream_control: StreamControl,
 ) {
-    if store.peer_is_banned(&peer.to_string()).await.unwrap_or(false) {
+    if store
+        .peer_is_banned(&peer.to_string())
+        .await
+        .unwrap_or(false)
+    {
         tracing::warn!("拒绝已封禁 peer {} 的 stream", peer);
         return;
     }
@@ -388,7 +421,7 @@ async fn handle_incoming_stream(
         }
     };
     tracing::debug!("收到 peer {} 的 stream 请求: {}", peer, protocol);
-    
+
     if protocol.contains("|relay:") {
         let parts: Vec<&str> = protocol.split("|relay:").collect();
         if parts.len() != 2 {
@@ -402,7 +435,12 @@ async fn handle_incoming_stream(
         }
         let next_hop = relay_peers[0];
         let remaining_chain = &relay_peers[1..];
-        tracing::info!("中继转发: {} -> {}, 剩余 {} 跳", peer, next_hop, remaining_chain.len());
+        tracing::info!(
+            "中继转发: {} -> {}, 剩余 {} 跳",
+            peer,
+            next_hop,
+            remaining_chain.len()
+        );
         let next_protocol_str = if remaining_chain.is_empty() {
             service_uuid.to_string()
         } else {
@@ -413,7 +451,10 @@ async fn handle_incoming_stream(
             tracing::error!("无效的下一跳 peerId: {}", next_hop);
             return;
         };
-        match stream_control.open_stream(next_peer, StreamProtocol::new(next_protocol_static)).await {
+        match stream_control
+            .open_stream(next_peer, StreamProtocol::new(next_protocol_static))
+            .await
+        {
             Ok(outbound) => {
                 let mut inbound = stream.compat();
                 let mut outbound = outbound.compat();
@@ -441,7 +482,12 @@ async fn handle_incoming_stream(
                 let mut stream = stream.compat();
                 match tokio::io::copy_bidirectional(&mut socket, &mut stream).await {
                     Ok((sent, received)) => {
-                        tracing::debug!("服务 {} 转发完成: 发送 {} 字节, 接收 {} 字节", protocol, sent, received);
+                        tracing::debug!(
+                            "服务 {} 转发完成: 发送 {} 字节, 接收 {} 字节",
+                            protocol,
+                            sent,
+                            received
+                        );
                     }
                     Err(err) => {
                         tracing::error!("服务 {} 转发失败: {}", protocol, err);
@@ -460,7 +506,11 @@ async fn handle_inbound_request(
     peer: &PeerId,
     request: P2pRequest,
 ) -> P2pResponse {
-    tracing::debug!("收到 peer {} 的请求: {:?}", peer, std::mem::discriminant(&request));
+    tracing::debug!(
+        "收到 peer {} 的请求: {:?}",
+        peer,
+        std::mem::discriminant(&request)
+    );
     match request {
         P2pRequest::Hello { hello } => {
             if hello.node_id.trim().is_empty() {
@@ -557,7 +607,10 @@ async fn handle_inbound_request(
                     message: "订阅 peer 不匹配".into(),
                 };
             }
-            if let Err(err) = store.record_subscription(&service_uuid, &subscriber_peer).await {
+            if let Err(err) = store
+                .record_subscription(&service_uuid, &subscriber_peer)
+                .await
+            {
                 return P2pResponse::Error {
                     message: format!("记录订阅失败: {}", err),
                 };
@@ -694,7 +747,11 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
                 .and_then(|s| s.to_str())
                 .map(|s| format!("{}.key", s))
                 .unwrap_or_else(|| "porta.node.key".to_string());
-            tracing::info!("[P2P] Generated key path from database: {} -> {}", db_path_env, key_file);
+            tracing::info!(
+                "[P2P] Generated key path from database: {} -> {}",
+                db_path_env,
+                key_file
+            );
             key_file
         } else {
             tracing::info!("[P2P] Using key path from database: {}", db_path);
@@ -706,7 +763,11 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
     if let Some(parent) = std::path::Path::new(&key_path).parent() {
         if !parent.as_os_str().is_empty() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                tracing::warn!("[P2P] Failed to create key directory {}: {}", parent.display(), e);
+                tracing::warn!(
+                    "[P2P] Failed to create key directory {}: {}",
+                    parent.display(),
+                    e
+                );
             }
         }
     }
@@ -715,10 +776,17 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
     if let Ok(bytes) = tokio::fs::read(&key_path).await {
         if let Ok(keypair) = identity::Keypair::from_protobuf_encoding(&bytes) {
             let peer_id = PeerId::from(keypair.public());
-            tracing::info!("[P2P] Loaded existing key from {}: peer_id={}", key_path, peer_id);
+            tracing::info!(
+                "[P2P] Loaded existing key from {}: peer_id={}",
+                key_path,
+                peer_id
+            );
             return Ok(keypair);
         } else {
-            tracing::warn!("[P2P] Key file {} exists but is invalid, generating new key", key_path);
+            tracing::warn!(
+                "[P2P] Key file {} exists but is invalid, generating new key",
+                key_path
+            );
         }
     }
 
@@ -727,7 +795,11 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
     let peer_id = PeerId::from(keypair.public());
     let encoded = keypair.to_protobuf_encoding()?;
     tokio::fs::write(&key_path, encoded).await?;
-    tracing::info!("[P2P] Generated new key at {}: peer_id={}", key_path, peer_id);
+    tracing::info!(
+        "[P2P] Generated new key at {}: peer_id={}",
+        key_path,
+        peer_id
+    );
     Ok(keypair)
 }
 

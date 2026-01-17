@@ -1,9 +1,9 @@
-use axum::{extract::State, routing::get, routing::post, Json, Router};
 use crate::{
     models::{CommunityAddRequest, ToggleRequest},
     resp,
     state::AppState,
 };
+use axum::{extract::State, routing::get, routing::post, Json, Router};
 
 pub fn router(state: AppState) -> Router {
     Router::new()
@@ -56,7 +56,7 @@ async fn remove_community(
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
     match state.app.remove_community(&req.id).await {
-        Ok(()) => resp::ok::<()> (None),
+        Ok(()) => resp::ok::<()>(None),
         Err(err) => resp::err(&format!("移除社区失败: {}", err)),
     }
 }
@@ -69,7 +69,7 @@ async fn connect_community(
     match state.app.connect_community(&req.id).await {
         Ok(()) => {
             tracing::info!("[API] 社区连接成功: id={}", req.id);
-            resp::ok::<()> (None)
+            resp::ok::<()>(None)
         }
         Err(err) => {
             let error_msg = format!("连接社区失败: {}", err);
@@ -84,7 +84,7 @@ async fn ban_node(
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
     match state.store.set_node_ban(&req.id, true).await {
-        Ok(true) => resp::ok::<()> (None),
+        Ok(true) => resp::ok::<()>(None),
         Ok(false) => resp::err("未找到节点"),
         Err(err) => resp::err(&format!("封禁节点失败: {}", err)),
     }
@@ -95,7 +95,7 @@ async fn unban_node(
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
     match state.store.set_node_ban(&req.id, false).await {
-        Ok(true) => resp::ok::<()> (None),
+        Ok(true) => resp::ok::<()>(None),
         Ok(false) => resp::err("未找到节点"),
         Err(err) => resp::err(&format!("解封节点失败: {}", err)),
     }
@@ -106,7 +106,7 @@ async fn announce_service(
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
     match state.store.set_service_announced(&req.id, true).await {
-        Ok(true) => resp::ok::<()> (None),
+        Ok(true) => resp::ok::<()>(None),
         Ok(false) => resp::err("未找到服务"),
         Err(err) => resp::err(&format!("公告服务失败: {}", err)),
     }
@@ -117,9 +117,8 @@ async fn disable_service(
     Json(req): Json<ToggleRequest>,
 ) -> impl axum::response::IntoResponse {
     match state.store.set_service_announced(&req.id, false).await {
-        Ok(true) => resp::ok::<()> (None),
+        Ok(true) => resp::ok::<()>(None),
         Ok(false) => resp::err("未找到服务"),
         Err(err) => resp::err(&format!("禁用服务失败: {}", err)),
     }
 }
-

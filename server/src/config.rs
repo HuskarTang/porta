@@ -2,9 +2,9 @@
 //!
 //! This module handles loading and parsing TOML configuration files.
 
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result};
 
 /// Root configuration structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,10 +203,10 @@ impl Config {
         let path = path.as_ref();
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        
+
         let config: Config = toml::from_str(&content)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-        
+
         Ok(config)
     }
 
@@ -248,12 +248,13 @@ impl Config {
             let config = Self::default();
             if let Some(parent) = path.parent() {
                 if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+                    std::fs::create_dir_all(parent).with_context(|| {
+                        format!("Failed to create config directory: {}", parent.display())
+                    })?;
                 }
             }
-            let content = toml::to_string_pretty(&config)
-                .context("Failed to render default config")?;
+            let content =
+                toml::to_string_pretty(&config).context("Failed to render default config")?;
             std::fs::write(path, content)
                 .with_context(|| format!("Failed to write default config: {}", path.display()))?;
             tracing::info!("Default config created successfully");
@@ -275,8 +276,9 @@ impl Config {
         let path = std::path::Path::new(db_path);
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("Failed to create db directory: {}", parent.display()))?;
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!("Failed to create db directory: {}", parent.display())
+                })?;
             }
         }
         if !path.exists() {
@@ -293,19 +295,30 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         // Validate role
         if self.node.role != "edge" && self.node.role != "community" {
-            anyhow::bail!("Invalid node role: '{}'. Must be 'edge' or 'community'", self.node.role);
+            anyhow::bail!(
+                "Invalid node role: '{}'. Must be 'edge' or 'community'",
+                self.node.role
+            );
         }
 
         // Validate log level
         let valid_levels = ["trace", "debug", "info", "warn", "error"];
         if !valid_levels.contains(&self.logging.level.to_lowercase().as_str()) {
-            anyhow::bail!("Invalid log level: '{}'. Must be one of: {:?}", self.logging.level, valid_levels);
+            anyhow::bail!(
+                "Invalid log level: '{}'. Must be one of: {:?}",
+                self.logging.level,
+                valid_levels
+            );
         }
 
         // Validate log format
         let valid_formats = ["compact", "pretty", "json"];
         if !valid_formats.contains(&self.logging.format.to_lowercase().as_str()) {
-            anyhow::bail!("Invalid log format: '{}'. Must be one of: {:?}", self.logging.format, valid_formats);
+            anyhow::bail!(
+                "Invalid log format: '{}'. Must be one of: {:?}",
+                self.logging.format,
+                valid_formats
+            );
         }
 
         Ok(())

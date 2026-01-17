@@ -80,7 +80,11 @@ async fn handle_socks5(mut socket: TcpStream) {
         return;
     }
     let nmethods = buf[0];
-    if socket.read_exact(&mut buf[..nmethods as usize]).await.is_err() {
+    if socket
+        .read_exact(&mut buf[..nmethods as usize])
+        .await
+        .is_err()
+    {
         return;
     }
     if socket.write_all(&[0x05, 0x00]).await.is_err() {
@@ -140,9 +144,7 @@ async fn handle_socks5(mut socket: TcpStream) {
         }
     };
 
-    let reply = [
-        0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
+    let reply = [0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
     if socket.write_all(&reply).await.is_err() {
         return;
     }
@@ -159,7 +161,7 @@ async fn handle_socks5(mut socket: TcpStream) {
 async fn handle_http_proxy(mut socket: TcpStream, first_byte: u8) {
     let mut buf = vec![first_byte];
     let mut line_buf = vec![0u8; 8192];
-    
+
     let n = match socket.read(&mut line_buf).await {
         Ok(n) if n > 0 => n,
         _ => return,

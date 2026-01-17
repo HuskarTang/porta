@@ -302,7 +302,11 @@ fn secure_route_serializes() {
     let route = SecureRoute {
         id: "route-1".to_string(),
         subscription_id: "sub-1".to_string(),
-        relay_peers: vec!["peer-a".to_string(), "peer-b".to_string(), "peer-c".to_string()],
+        relay_peers: vec![
+            "peer-a".to_string(),
+            "peer-b".to_string(),
+            "peer-c".to_string(),
+        ],
         local_port: 19000,
         status: "connected".to_string(),
     };

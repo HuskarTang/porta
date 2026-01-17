@@ -3,7 +3,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::{
-    models::{AccessRequest, PublishRequest, SecureConnectRequest, SubscribeRequest, UpdateSessionRequest},
+    models::{
+        AccessRequest, PublishRequest, SecureConnectRequest, SubscribeRequest, UpdateSessionRequest,
+    },
     resp,
     state::AppState,
 };
@@ -43,7 +45,9 @@ async fn get_discovered_services(
     }
 }
 
-async fn get_subscribed_services(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+async fn get_subscribed_services(
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
     match state.store.subscribed_services().await {
         Ok(list) => resp::ok(Some(list)),
         Err(err) => resp::err(&format!("获取订阅列表失败: {}", err)),
@@ -71,7 +75,7 @@ async fn connect(
         return resp::err("缺少 id");
     }
     match state.app.connect_service(&req.id).await {
-        Ok(()) => resp::ok::<()> (None),
+        Ok(()) => resp::ok::<()>(None),
         Err(err) => resp::err(&format!("连接订阅失败: {}", err)),
     }
 }
@@ -84,7 +88,7 @@ async fn disconnect(
         return resp::err("缺少 id");
     }
     match state.app.disconnect_service(&req.id).await {
-        Ok(()) => resp::ok::<()> (None),
+        Ok(()) => resp::ok::<()>(None),
         Err(err) => resp::err(&format!("断开订阅失败: {}", err)),
     }
 }
@@ -113,7 +117,9 @@ async fn get_access_url(
     }
 }
 
-async fn get_published_services(State(state): State<AppState>) -> impl axum::response::IntoResponse {
+async fn get_published_services(
+    State(state): State<AppState>,
+) -> impl axum::response::IntoResponse {
     match state.store.published_services().await {
         Ok(list) => resp::ok(Some(list)),
         Err(err) => resp::err(&format!("获取发布列表失败: {}", err)),
@@ -141,7 +147,7 @@ async fn unpublish(
         return resp::err("缺少 id");
     }
     match state.app.unpublish_service(&req.id).await {
-        Ok(()) => resp::ok::<()> (None),
+        Ok(()) => resp::ok::<()>(None),
         Err(err) => resp::err(&format!("下架失败: {}", err)),
     }
 }
@@ -154,7 +160,7 @@ async fn remove_publish(
         return resp::err("缺少 id");
     }
     match state.store.remove_published(&req.id).await {
-        Ok(true) => resp::ok::<()> (None),
+        Ok(true) => resp::ok::<()>(None),
         Ok(false) => resp::err("未找到发布服务"),
         Err(err) => resp::err(&format!("删除失败: {}", err)),
     }
@@ -184,7 +190,7 @@ async fn secure_disconnect(
         return resp::err("缺少 id");
     }
     match state.app.disconnect_secure_route(&req.id).await {
-        Ok(()) => resp::ok::<()> (None),
+        Ok(()) => resp::ok::<()>(None),
         Err(err) => resp::err(&format!("断开安全路由失败: {}", err)),
     }
 }

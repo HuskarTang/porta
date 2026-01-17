@@ -30,7 +30,7 @@ async fn enable_proxy(
     if let Err(err) = state.app.publish_proxy_service().await {
         return resp::err(&format!("发布代理服务失败: {}", err));
     }
-    resp::ok::<()> (None)
+    resp::ok::<()>(None)
 }
 
 async fn disable_proxy(
@@ -46,5 +46,5 @@ async fn disable_proxy(
     if let Err(err) = state.app.unpublish_proxy_service().await {
         return resp::err(&format!("下架代理服务失败: {}", err));
     }
-    resp::ok::<()> (None)
+    resp::ok::<()>(None)
 }

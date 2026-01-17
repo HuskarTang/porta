@@ -7,8 +7,9 @@ use crate::{
     app::AppService,
     models::{
         CommunityAddRequest, CommunityNode, CommunityService, CommunitySummary, DiscoveredService,
-        KeyImportRequest, NodeConfigUpdate, NodeInfo, ProxyStatus, PublishRequest, PublishedService,
-        SecureRoute, ServiceRegistryItem, SessionInfo, SubscribeRequest, SubscribedService,
+        KeyImportRequest, NodeConfigUpdate, NodeInfo, ProxyStatus, PublishRequest,
+        PublishedService, SecureRoute, ServiceRegistryItem, SessionInfo, SubscribeRequest,
+        SubscribedService,
     },
     p2p,
 };
@@ -36,16 +37,21 @@ impl AppState {
         let peer_id = p2p.peer_id();
         store.ensure_node_identity(&peer_id).await?;
         let app = AppService::new(store.clone(), p2p.clone());
-        
+
         let proxy_status = store.proxy_status().await?;
         let proxy_server = Arc::new(crate::proxy::ProxyServer::new(proxy_status.listen_port));
         if proxy_status.enabled {
             let _ = proxy_server.start().await;
         }
-        
-        let state = Self { store, p2p, app, proxy_server };
+
+        let state = Self {
+            store,
+            p2p,
+            app,
+            proxy_server,
+        };
         state.spawn_maintenance_tasks();
-        
+
         Ok(state)
     }
 
@@ -91,7 +97,12 @@ pub trait Store: Send + Sync {
     async fn community_multiaddr(&self, id: &str) -> StoreResult<Option<String>>;
     async fn community_by_id(&self, id: &str) -> StoreResult<Option<CommunitySummary>>;
     async fn community_exists_by_peer(&self, peer_id: &str) -> StoreResult<bool>;
-    async fn update_community_multiaddr(&self, id: &str, multiaddr: &str, peer_id: &str) -> StoreResult<bool>;
+    async fn update_community_multiaddr(
+        &self,
+        id: &str,
+        multiaddr: &str,
+        peer_id: &str,
+    ) -> StoreResult<bool>;
 
     async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>>;
     async fn community_services(&self) -> StoreResult<Vec<CommunityService>>;
@@ -128,17 +139,28 @@ pub trait Store: Send + Sync {
     async fn set_node_ban(&self, id: &str, banned: bool) -> StoreResult<bool>;
     async fn set_proxy_enabled(&self, enabled: bool) -> StoreResult<()>;
 
-    async fn upsert_peer(&self, peer_id: &str, node_id: &str, role: &str, status: &str)
-        -> StoreResult<()>;
+    async fn upsert_peer(
+        &self,
+        peer_id: &str,
+        node_id: &str,
+        role: &str,
+        status: &str,
+    ) -> StoreResult<()>;
     async fn peer_role(&self, peer_id: &str) -> StoreResult<Option<String>>;
     async fn peer_is_banned(&self, peer_id: &str) -> StoreResult<bool>;
 
     async fn upsert_service_registry(&self, service: ServiceRegistryItem) -> StoreResult<()>;
     async fn remove_service_registry(&self, uuid: &str) -> StoreResult<bool>;
     async fn list_service_registry(&self) -> StoreResult<Vec<ServiceRegistryItem>>;
-    async fn resolve_service_registry(&self, uuid: &str) -> StoreResult<Option<ServiceRegistryItem>>;
-    async fn record_subscription(&self, service_uuid: &str, subscriber_peer: &str)
-        -> StoreResult<()>;
+    async fn resolve_service_registry(
+        &self,
+        uuid: &str,
+    ) -> StoreResult<Option<ServiceRegistryItem>>;
+    async fn record_subscription(
+        &self,
+        service_uuid: &str,
+        subscriber_peer: &str,
+    ) -> StoreResult<()>;
 
     async fn secure_routes(&self) -> StoreResult<Vec<SecureRoute>>;
     async fn add_secure_route(&self, route: SecureRoute) -> StoreResult<()>;
@@ -457,8 +479,7 @@ impl SqliteStore {
         // Seed mock communities ONLY if explicitly enabled via PORTA_SEED_COMMUNITIES=1
         // This is for testing/demo purposes only. In production, communities should be added
         // through the API using the add_community endpoint.
-        let seed_communities =
-            std::env::var("PORTA_SEED_COMMUNITIES").ok().as_deref() == Some("1");
+        let seed_communities = std::env::var("PORTA_SEED_COMMUNITIES").ok().as_deref() == Some("1");
         if seed_communities && comm_count == 0 {
             tracing::info!("Seeding mock communities (PORTA_SEED_COMMUNITIES=1)");
             let entries = vec![
@@ -721,7 +742,9 @@ impl Store for SqliteStore {
     }
 
     async fn add_community(&self, req: CommunityAddRequest) -> StoreResult<CommunitySummary> {
-        let id = req.id.unwrap_or_else(|| format!("community-{}", Uuid::new_v4()));
+        let id = req
+            .id
+            .unwrap_or_else(|| format!("community-{}", Uuid::new_v4()));
         sqlx::query(
             "INSERT INTO communities (id, name, description, peers, joined, multiaddr, peer_id) VALUES (?, ?, ?, 0, 0, ?, ?)",
         )
@@ -794,7 +817,12 @@ impl Store for SqliteStore {
         Ok(count > 0)
     }
 
-    async fn update_community_multiaddr(&self, id: &str, multiaddr: &str, peer_id: &str) -> StoreResult<bool> {
+    async fn update_community_multiaddr(
+        &self,
+        id: &str,
+        multiaddr: &str,
+        peer_id: &str,
+    ) -> StoreResult<bool> {
         let result = sqlx::query("UPDATE communities SET multiaddr = ?, peer_id = ? WHERE id = ?")
             .bind(multiaddr)
             .bind(peer_id)
@@ -805,11 +833,10 @@ impl Store for SqliteStore {
     }
 
     async fn community_nodes(&self) -> StoreResult<Vec<CommunityNode>> {
-        let rows = sqlx::query(
-            "SELECT peer_id, node_id, status, banned FROM peers WHERE role = 'edge'",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query("SELECT peer_id, node_id, status, banned FROM peers WHERE role = 'edge'")
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows
             .into_iter()
             .map(|row| CommunityNode {
@@ -822,11 +849,10 @@ impl Store for SqliteStore {
     }
 
     async fn community_services(&self) -> StoreResult<Vec<CommunityService>> {
-        let rows = sqlx::query(
-            "SELECT uuid, name, type, port, online, announced FROM service_registry",
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let rows =
+            sqlx::query("SELECT uuid, name, type, port, online, announced FROM service_registry")
+                .fetch_all(&self.pool)
+                .await?;
         Ok(rows
             .into_iter()
             .map(|row| CommunityService {
@@ -1108,14 +1134,13 @@ impl Store for SqliteStore {
         remote_addr: &str,
         status: &str,
     ) -> StoreResult<bool> {
-        let result = sqlx::query(
-            "UPDATE subscribed_services SET remote_addr = ?, status = ? WHERE id = ?",
-        )
-        .bind(remote_addr)
-        .bind(status)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("UPDATE subscribed_services SET remote_addr = ?, status = ? WHERE id = ?")
+                .bind(remote_addr)
+                .bind(status)
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1303,7 +1328,10 @@ impl Store for SqliteStore {
             .collect())
     }
 
-    async fn resolve_service_registry(&self, uuid: &str) -> StoreResult<Option<ServiceRegistryItem>> {
+    async fn resolve_service_registry(
+        &self,
+        uuid: &str,
+    ) -> StoreResult<Option<ServiceRegistryItem>> {
         let row = sqlx::query(
             "SELECT uuid, name, type, port, description, provider_peer, provider_addr, online FROM service_registry WHERE uuid = ?",
         )
@@ -1351,7 +1379,8 @@ impl Store for SqliteStore {
             .into_iter()
             .map(|row| {
                 let relay_json: String = row.get("relay_peers");
-                let relay_peers: Vec<String> = serde_json::from_str(&relay_json).unwrap_or_default();
+                let relay_peers: Vec<String> =
+                    serde_json::from_str(&relay_json).unwrap_or_default();
                 SecureRoute {
                     id: row.get("id"),
                     subscription_id: row.get("subscription_id"),

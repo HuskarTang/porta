@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 
 use crate::{
     models::{
-        CommunityAddRequest, CommunitySummary, DiscoveredService, PublishedService, PublishRequest,
+        CommunityAddRequest, CommunitySummary, DiscoveredService, PublishRequest, PublishedService,
         SecureConnectRequest, SecureRoute, ServiceRegistryItem, SessionInfo, SubscribeRequest,
         SubscribedService,
     },
@@ -52,9 +52,13 @@ impl AppService {
         }
         if let Some(addr) = req.multiaddr.as_ref() {
             let addr: Multiaddr = addr.parse()?;
-            let peer_id = extract_peer_id(&addr)
-                .ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"))?;
-            if self.store.community_exists_by_peer(&peer_id.to_string()).await? {
+            let peer_id =
+                extract_peer_id(&addr).ok_or_else(|| anyhow!("multiaddr 缺少 /p2p/peerId"))?;
+            if self
+                .store
+                .community_exists_by_peer(&peer_id.to_string())
+                .await?
+            {
                 return Err(anyhow!("该社区已存在"));
             }
             req.peer_id = Some(peer_id.to_string());
@@ -140,10 +144,7 @@ impl AppService {
         self.store
             .upsert_discovered_services(&community_id, registry)
             .await?;
-        let mut list = self
-            .store
-            .discovered_services(Some(community_id))
-            .await?;
+        let mut list = self.store.discovered_services(Some(community_id)).await?;
         let subscribed = self.store.subscribed_services().await?;
         for item in &mut list {
             let hit = subscribed
@@ -240,13 +241,8 @@ impl AppService {
         };
         self.store.upsert_session(session).await?;
         let peer_id: PeerId = provider_peer.parse()?;
-        tunnel::ensure_stream_mapping(
-            local_port,
-            peer_id,
-            service_for_stream,
-            self.p2p.clone(),
-        )
-        .await?;
+        tunnel::ensure_stream_mapping(local_port, peer_id, service_for_stream, self.p2p.clone())
+            .await?;
         tracing::info!("服务 {} 连接成功，本地端口: {}", id, local_port);
         Ok(())
     }
@@ -307,7 +303,11 @@ impl AppService {
                 }
             }
         }
-        tracing::info!("服务 {} 发布完成，已同步到 {} 个社区", published.name, publish_count);
+        tracing::info!(
+            "服务 {} 发布完成，已同步到 {} 个社区",
+            published.name,
+            publish_count
+        );
         Ok(published)
     }
 
@@ -321,7 +321,12 @@ impl AppService {
             if let Ok(peer_id) = self.ensure_community_peer(&community.id).await {
                 let _ = self
                     .p2p
-                    .request(peer_id, P2pRequest::UnpublishService { service_uuid: id.into() })
+                    .request(
+                        peer_id,
+                        P2pRequest::UnpublishService {
+                            service_uuid: id.into(),
+                        },
+                    )
                     .await;
             }
         }
@@ -349,7 +354,11 @@ impl AppService {
         {
             let cache = self.peer_cache.read().await;
             if let Some(cached_peer) = cache.get(community_id) {
-                tracing::debug!("[社区连接] 使用缓存的 peer: community={}, peer={}", community_id, cached_peer);
+                tracing::debug!(
+                    "[社区连接] 使用缓存的 peer: community={}, peer={}",
+                    community_id,
+                    cached_peer
+                );
                 return Ok(*cached_peer);
             }
         }
@@ -359,42 +368,71 @@ impl AppService {
             tracing::error!("[社区连接] 未找到社区: id={}", community_id);
             return Err(anyhow!("未找到社区: {}", community_id));
         };
-        
+
         let Some(addr_str) = community.multiaddr.clone() else {
-            tracing::error!("[社区连接] 社区缺少 multiaddr: id={}, name={}", community_id, community.name);
-            return Err(anyhow!("社区 '{}' 缺少 multiaddr，请检查社区配置", community.name));
+            tracing::error!(
+                "[社区连接] 社区缺少 multiaddr: id={}, name={}",
+                community_id,
+                community.name
+            );
+            return Err(anyhow!(
+                "社区 '{}' 缺少 multiaddr，请检查社区配置",
+                community.name
+            ));
         };
-        
-        tracing::info!("[社区连接] 解析 multiaddr: id={}, addr={}", community_id, addr_str);
-        let mut addr: Multiaddr = addr_str.parse()
-            .map_err(|e| {
-                tracing::error!("[社区连接] multiaddr 解析失败: id={}, addr={}, error={}", community_id, addr_str, e);
-                anyhow!("无效的 multiaddr 格式: {}", e)
-            })?;
-        
-        let mut expected_peer = extract_peer_id(&addr)
-            .ok_or_else(|| {
-                tracing::error!("[社区连接] multiaddr 缺少 peerId: id={}, addr={}", community_id, addr);
-                anyhow!("multiaddr 缺少 /p2p/peerId")
-            })?;
-        
-        tracing::info!("[社区连接] 开始拨号: id={}, peer={}, addr={}", community_id, expected_peer, addr);
+
+        tracing::info!(
+            "[社区连接] 解析 multiaddr: id={}, addr={}",
+            community_id,
+            addr_str
+        );
+        let mut addr: Multiaddr = addr_str.parse().map_err(|e| {
+            tracing::error!(
+                "[社区连接] multiaddr 解析失败: id={}, addr={}, error={}",
+                community_id,
+                addr_str,
+                e
+            );
+            anyhow!("无效的 multiaddr 格式: {}", e)
+        })?;
+
+        let mut expected_peer = extract_peer_id(&addr).ok_or_else(|| {
+            tracing::error!(
+                "[社区连接] multiaddr 缺少 peerId: id={}, addr={}",
+                community_id,
+                addr
+            );
+            anyhow!("multiaddr 缺少 /p2p/peerId")
+        })?;
+
+        tracing::info!(
+            "[社区连接] 开始拨号: id={}, peer={}, addr={}",
+            community_id,
+            expected_peer,
+            addr
+        );
         let addr_for_error = addr.clone();
-        
+
         // Retry dial with exponential backoff
         let mut peer_id = None;
         let max_retries = 3;
         for attempt in 1..=max_retries {
             match self.p2p.dial(addr.clone()).await {
                 Ok(peer) => {
-                    tracing::info!("[社区连接] 拨号成功: id={}, peer={}, 尝试次数={}", community_id, peer, attempt);
+                    tracing::info!(
+                        "[社区连接] 拨号成功: id={}, peer={}, 尝试次数={}",
+                        community_id,
+                        peer,
+                        attempt
+                    );
                     peer_id = Some(peer);
                     break;
                 }
                 Err(e) => {
                     let error_str = e.to_string();
                     // Check if this is a WrongPeerId error and try to auto-fix
-                    if error_str.contains("WrongPeerId") && error_str.contains("obtained: PeerId(") {
+                    if error_str.contains("WrongPeerId") && error_str.contains("obtained: PeerId(")
+                    {
                         // Extract the actual peer_id from error message
                         // Format: "WrongPeerId { obtained: PeerId("12D3KooW..."), ... }"
                         if let Some(start) = error_str.find("PeerId(\"") {
@@ -404,76 +442,143 @@ impl AppService {
                                 if let Ok(actual_peer_id) = actual_peer_id_str.parse::<PeerId>() {
                                     tracing::warn!("[社区连接] 检测到 WrongPeerId 错误: id={}, 期望={}, 实际={}", 
                                         community_id, expected_peer, actual_peer_id);
-                                    
+
                                     // Update multiaddr with actual peer_id
                                     let mut new_addr = addr.clone();
                                     // Remove old /p2p/peer_id part
                                     new_addr = new_addr
                                         .iter()
-                                        .filter(|p| !matches!(p, libp2p::multiaddr::Protocol::P2p(_)))
+                                        .filter(|p| {
+                                            !matches!(p, libp2p::multiaddr::Protocol::P2p(_))
+                                        })
                                         .collect::<Multiaddr>();
                                     // Add correct /p2p/peer_id
-                                    new_addr.push(libp2p::multiaddr::Protocol::P2p(actual_peer_id.into()));
-                                    
+                                    new_addr.push(libp2p::multiaddr::Protocol::P2p(
+                                        actual_peer_id.into(),
+                                    ));
+
                                     let new_addr_str = new_addr.to_string();
-                                    if self.store.update_community_multiaddr(community_id, &new_addr_str, actual_peer_id_str).await.is_ok() {
-                                        tracing::info!("[社区连接] 已自动更新 multiaddr: id={}, 新地址={}", community_id, new_addr_str);
+                                    if self
+                                        .store
+                                        .update_community_multiaddr(
+                                            community_id,
+                                            &new_addr_str,
+                                            actual_peer_id_str,
+                                        )
+                                        .await
+                                        .is_ok()
+                                    {
+                                        tracing::info!(
+                                            "[社区连接] 已自动更新 multiaddr: id={}, 新地址={}",
+                                            community_id,
+                                            new_addr_str
+                                        );
                                         // Update addr for next retry
                                         addr = new_addr.clone();
                                         expected_peer = actual_peer_id;
                                         // Continue to retry with corrected address
                                         let backoff = std::time::Duration::from_millis(500);
-                                        tracing::info!("[社区连接] 使用修正后的地址重试: id={}, {:.2}秒后重试", community_id, backoff.as_secs_f64());
+                                        tracing::info!(
+                                            "[社区连接] 使用修正后的地址重试: id={}, {:.2}秒后重试",
+                                            community_id,
+                                            backoff.as_secs_f64()
+                                        );
                                         tokio::time::sleep(backoff).await;
                                         continue;
                                     } else {
-                                        tracing::error!("[社区连接] 更新 multiaddr 失败: id={}", community_id);
+                                        tracing::error!(
+                                            "[社区连接] 更新 multiaddr 失败: id={}",
+                                            community_id
+                                        );
                                     }
                                 }
                             }
                         }
                     }
-                    
+
                     if attempt < max_retries {
                         let backoff = std::time::Duration::from_millis(500 * (1 << (attempt - 1))); // 500ms, 1s, 2s
-                        tracing::warn!("[社区连接] 拨号失败 (尝试 {}/{}): id={}, error={}, {:.2}秒后重试", 
-                            attempt, max_retries, community_id, e, backoff.as_secs_f64());
+                        tracing::warn!(
+                            "[社区连接] 拨号失败 (尝试 {}/{}): id={}, error={}, {:.2}秒后重试",
+                            attempt,
+                            max_retries,
+                            community_id,
+                            e,
+                            backoff.as_secs_f64()
+                        );
                         tokio::time::sleep(backoff).await;
                     } else {
-                        tracing::error!("[社区连接] 拨号失败 (已重试{}次): id={}, peer={}, addr={}, error={}", 
-                            max_retries, community_id, expected_peer, addr_for_error, e);
+                        tracing::error!(
+                            "[社区连接] 拨号失败 (已重试{}次): id={}, peer={}, addr={}, error={}",
+                            max_retries,
+                            community_id,
+                            expected_peer,
+                            addr_for_error,
+                            e
+                        );
                         return Err(anyhow!("无法连接到社区节点 ({}): {}", addr_for_error, e));
                     }
                 }
             }
         }
-        
+
         let peer_id = peer_id.expect("peer_id should be set after successful dial");
-        
+
         if peer_id != expected_peer {
-            tracing::error!("[社区连接] peerId 校验失败: id={}, expected={}, actual={}", community_id, expected_peer, peer_id);
-            return Err(anyhow!("peerId 校验失败: 期望 {}, 实际 {}", expected_peer, peer_id));
+            tracing::error!(
+                "[社区连接] peerId 校验失败: id={}, expected={}, actual={}",
+                community_id,
+                expected_peer,
+                peer_id
+            );
+            return Err(anyhow!(
+                "peerId 校验失败: 期望 {}, 实际 {}",
+                expected_peer,
+                peer_id
+            ));
         }
-        
+
         if self.store.peer_is_banned(&peer_id.to_string()).await? {
-            tracing::warn!("[社区连接] 对端 peer 已被封禁: id={}, peer={}", community_id, peer_id);
+            tracing::warn!(
+                "[社区连接] 对端 peer 已被封禁: id={}, peer={}",
+                community_id,
+                peer_id
+            );
             return Err(anyhow!("对端 peer 已被封禁"));
         }
-        
+
         // The dial() already waits for Identify protocol to complete
         // Send Hello request immediately to keep connection alive
-        tracing::info!("[社区连接] 发送 Hello 请求: id={}, peer={}", community_id, peer_id);
+        tracing::info!(
+            "[社区连接] 发送 Hello 请求: id={}, peer={}",
+            community_id,
+            peer_id
+        );
         let response = match self
             .p2p
-            .request(peer_id, P2pRequest::Hello { hello: self.build_hello().await? })
+            .request(
+                peer_id,
+                P2pRequest::Hello {
+                    hello: self.build_hello().await?,
+                },
+            )
             .await
         {
             Ok(resp) => {
-                tracing::info!("[社区连接] 收到 Hello 响应: id={}, peer={}", community_id, peer_id);
+                tracing::info!(
+                    "[社区连接] 收到 Hello 响应: id={}, peer={}",
+                    community_id,
+                    peer_id
+                );
                 resp
             }
             Err(e) => {
-                tracing::error!("[社区连接] Hello 请求失败: id={}, peer={}, error={}", community_id, peer_id, e);
+                tracing::error!(
+                    "[社区连接] Hello 请求失败: id={}, peer={}, error={}",
+                    community_id,
+                    peer_id,
+                    e
+                );
                 return Err(anyhow!("与社区节点握手失败: {}", e));
             }
         };
@@ -501,20 +606,27 @@ impl AppService {
         if req.relay_peers.len() < 2 {
             return Err(anyhow!("至少需要两个中继节点"));
         }
-        tracing::info!("建立安全连接: 订阅 {} 经由 {} 个中继", req.subscription_id, req.relay_peers.len());
+        tracing::info!(
+            "建立安全连接: 订阅 {} 经由 {} 个中继",
+            req.subscription_id,
+            req.relay_peers.len()
+        );
         let Some(subscription) = self.store.find_subscription(&req.subscription_id).await? else {
             return Err(anyhow!("未找到订阅"));
         };
         let Some(service_uuid) = subscription.service_uuid.clone() else {
             return Err(anyhow!("订阅缺少 service_uuid"));
         };
-        let local_port = req.local_port.unwrap_or_else(|| {
-            parse_local_port(&subscription.local_mapping).unwrap_or(0)
-        });
+        let local_port = req
+            .local_port
+            .unwrap_or_else(|| parse_local_port(&subscription.local_mapping).unwrap_or(0));
         if local_port == 0 {
             return Err(anyhow!("无效本地端口"));
         }
-        let first_relay = req.relay_peers.first().ok_or_else(|| anyhow!("中继链为空"))?;
+        let first_relay = req
+            .relay_peers
+            .first()
+            .ok_or_else(|| anyhow!("中继链为空"))?;
         let first_peer: PeerId = first_relay.parse()?;
         let response = self
             .p2p
@@ -610,7 +722,12 @@ impl AppService {
                         tracing::debug!("社区 {} 连接保活成功", community.id);
                     }
                     Ok(peer_id) => {
-                        tracing::warn!("社区 {} peerId 不匹配: 期望 {}, 实际 {}", community.id, expected_peer, peer_id);
+                        tracing::warn!(
+                            "社区 {} peerId 不匹配: 期望 {}, 实际 {}",
+                            community.id,
+                            expected_peer,
+                            peer_id
+                        );
                     }
                     Err(err) => {
                         tracing::warn!("社区 {} 连接失败: {}", community.id, err);
@@ -668,6 +785,9 @@ mod tests {
     #[test]
     fn should_compose_remote_addr() {
         assert_eq!(compose_remote_addr("127.0.0.1", 8080), "127.0.0.1:8080");
-        assert_eq!(compose_remote_addr("127.0.0.1:9000", 8080), "127.0.0.1:9000");
+        assert_eq!(
+            compose_remote_addr("127.0.0.1:9000", 8080),
+            "127.0.0.1:9000"
+        );
     }
 }

@@ -46,16 +46,20 @@ fn main() {
                 }
             };
             if let Err(err) = std::fs::create_dir_all(&data_dir) {
-                tracing::error!("Failed to create app data dir {}: {}", data_dir.display(), err);
+                tracing::error!(
+                    "Failed to create app data dir {}: {}",
+                    data_dir.display(),
+                    err
+                );
             }
-            
+
             // Set database path and role for backend
             let db_path = data_dir.join("porta.db");
             std::env::set_var("PORTA_DB", db_path.to_string_lossy().to_string());
             std::env::set_var("PORTA_ROLE", "edge");
             // Set default P2P TCP port for desktop app
             std::env::set_var("PORTA_P2P_TCP_PORT", "9000");
-            
+
             tracing::info!("Database path: {}", db_path.display());
             tracing::info!("Node role: edge");
 

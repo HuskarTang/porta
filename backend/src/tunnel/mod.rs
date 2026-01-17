@@ -1,10 +1,6 @@
 use anyhow::Result;
 use std::{collections::HashSet, sync::OnceLock};
-use tokio::{
-    io::copy_bidirectional,
-    net::TcpListener,
-    sync::Mutex,
-};
+use tokio::{io::copy_bidirectional, net::TcpListener, sync::Mutex};
 use tokio_util::compat::FuturesAsyncReadCompatExt;
 
 use libp2p::PeerId;

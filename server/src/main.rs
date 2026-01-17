@@ -177,10 +177,13 @@ fn file_response(contents: &[u8], path: &str) -> Response {
 /// Initialize the logging subsystem based on configuration
 fn init_logging(config: &Config) -> anyhow::Result<()> {
     let log_level = &config.logging.level;
-    let filter = format!("porta_backend={},porta_server={},tower_http=debug", log_level, log_level);
+    let filter = format!(
+        "porta_backend={},porta_server={},tower_http=debug",
+        log_level, log_level
+    );
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| filter.into());
+    let env_filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| filter.into());
 
     match config.logging.format.as_str() {
         "json" => {
@@ -191,7 +194,7 @@ fn init_logging(config: &Config) -> anyhow::Result<()> {
                         .json()
                         .with_file(true)
                         .with_line_number(true)
-                        .with_target(true)
+                        .with_target(true),
                 )
                 .init();
         }
@@ -203,7 +206,7 @@ fn init_logging(config: &Config) -> anyhow::Result<()> {
                         .pretty()
                         .with_file(true)
                         .with_line_number(true)
-                        .with_target(true)
+                        .with_target(true),
                 )
                 .init();
         }
@@ -215,7 +218,7 @@ fn init_logging(config: &Config) -> anyhow::Result<()> {
                     tracing_subscriber::fmt::layer()
                         .with_file(true)
                         .with_line_number(true)
-                        .with_target(true)
+                        .with_target(true),
                 )
                 .init();
         }
