@@ -738,12 +738,21 @@ async fn load_or_generate_keypair(store: &Arc<dyn Store>) -> Result<identity::Ke
         if db_path.is_empty() || db_path == "porta.node.key" {
             // Generate unique key path based on database path
             let db_path_env = std::env::var("PORTA_DB").unwrap_or_else(|_| "porta.db".to_string());
-            let db_file = std::path::Path::new(&db_path_env);
-            let key_file = db_file
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| format!("{}.key", s))
-                .unwrap_or_else(|| "porta.node.key".to_string());
+
+            // Handle :memory: database (used in tests) - use temp file path
+            let key_file = if db_path_env == ":memory:" {
+                // For in-memory database, use a temporary key file in current directory
+                // Use a unique name to avoid conflicts between tests
+                format!("porta-test-{}.key", std::process::id())
+            } else {
+                let db_file = std::path::Path::new(&db_path_env);
+                db_file
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(|s| format!("{}.key", s))
+                    .unwrap_or_else(|| "porta.node.key".to_string())
+            };
+
             tracing::info!(
                 "[P2P] Generated key path from database: {} -> {}",
                 db_path_env,
