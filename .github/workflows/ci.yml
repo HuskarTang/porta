@@ -40,19 +40,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       
-      - name: Check formatting
-        run: |
-          cd backend && cargo fmt --check
-          cd ../server && cargo fmt --check
-      
-      - name: Run clippy
-        run: |
-          cd backend && cargo clippy -- -D warnings
-          cd ../server && cargo clippy -- -D warnings
-      
-      - name: Run backend tests
-        run: cd backend && cargo test --verbose
-      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -65,6 +52,19 @@ jobs:
 
       - name: Build frontend for server embed
         run: cd frontend && npm run build
+      
+      - name: Check formatting
+        run: |
+          cd backend && cargo fmt --check
+          cd ../server && cargo fmt --check
+      
+      - name: Run clippy
+        run: |
+          cd backend && cargo clippy -- -D warnings
+          cd ../server && cargo clippy -- -D warnings
+      
+      - name: Run backend tests
+        run: cd backend && cargo test --verbose
 
       - name: Run server tests
         run: cd server && cargo test --verbose
