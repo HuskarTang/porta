@@ -59,6 +59,9 @@ jobs:
           - platform: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
+          - platform: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
 
     steps:
       - name: Checkout repository
@@ -97,6 +100,7 @@ jobs:
         with:
           releaseId: ${{ needs.create-release.outputs.release_id }}
           args: --target ${{ matrix.target }}
+          projectPath: src-tauri
 
   # Build Server Binary
   build-server:
@@ -133,6 +137,11 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact_name: porta-server.exe
             asset_name: porta-server-windows-x64.exe
+          - platform: windows-arm64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_name: porta-server.exe
+            asset_name: porta-server-windows-arm64.exe
 
     steps:
       - name: Checkout repository
@@ -165,6 +174,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsqlite3-dev
+
+      - name: Install system dependencies (Ubuntu for cross-compilation)
+        if: runner.os == 'Linux' && matrix.use_cross
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev gcc-aarch64-linux-gnu
 
       - name: Build server (native)
         if: ${{ !matrix.use_cross }}
