@@ -33,7 +33,8 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/icon.icns"
+      "icons/icon.icns",
+      "icons/icon.ico"
     ],
     "category": "public.app-category.utilities",
     "shortDescription": "P2P Network Application",
